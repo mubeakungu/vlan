@@ -158,6 +158,9 @@ monitoring:
   clients: true                # connected devices: DHCP leases + ARP + Wi-Fi (default on)
   speedtest_every: 3600        # internet speed test every N seconds (0 = only the dashboard button)
   speedtest: {bytes: 25000000} # size per run; override download/upload URLs if Cloudflare is blocked
+  backup_every: 900            # back up each device's running config every N seconds for drift detection (0 = off)
+  reconcile: false             # on drift, auto-push the generated config back (opt-in; default: alert only)
+  backup_keep: 10              # config snapshots kept per device
   webhook: https://...         # JSON POST on every alert (Slack, Discord, n8n, ...)
   telegram: {token: "123:ABC", chat_id: "456"}
 devices:
@@ -176,6 +179,28 @@ VLAN, and whether it's wired or Wi-Fi), and an **internet speed test** with a
 "Run test" button plus scheduled runs. Bandwidth and byte counters come from
 MikroTik, Cisco, EdgeOS/VyOS and OpenWrt; the client list from MikroTik and
 Cisco (other vendors show reachability and uptime only).
+
+With `backup_every` set, the monitor also pulls each device's running config on
+a schedule, stores a snapshot, and compares it to the last one. When a config
+changes out-of-band it raises a **drift** alert (webhook/Telegram) and the
+dashboard's **Config & drift** section shows which devices are in sync vs
+changed, the last-backup time, and a unified diff of what changed. Set
+`reconcile: true` to have the monitor automatically push the generated config
+back to a drifted device (opt-in, since that changes live gear unattended).
+
+## Automating the whole lifecycle: `vlantool up`
+
+```bash
+vlantool up network.yaml                 # validate -> push every device -> watch, with drift detection on
+vlantool up network.yaml --yes           # don't prompt before pushing
+vlantool up network.yaml --no-push       # just bring up monitoring (no config push)
+```
+
+`vlantool up` is the one-command path: it validates the file, shows and pushes
+the config to every SSH-reachable device (after a confirmation, or `--yes`),
+then launches the dashboard with config backup + drift detection turned on
+(`--backup-every`, default 900s). From then on it keeps the network matching
+the file and flags anything that drifts.
 
 ## Security: IPS, log forwarding and EDR
 

@@ -51,6 +51,9 @@ td { padding: 5px 6px; border-top: 1px solid var(--line); }
 .tag { font-size: 10px; text-transform: uppercase; padding: 0 5px; border-radius: 8px; background: var(--line); color: var(--muted); }
 .tag.wifi { background: var(--accent); color: #fff; }
 section h2 .btn { float: right; }
+#driftDiff { margin-top: 12px; padding: 12px; background: var(--bg); border: 1px solid var(--line);
+  border-radius: 8px; overflow-x: auto; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre; max-height: 360px; }
 .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
 .chart h3 { font-size: 13px; margin: 0 0 2px; font-weight: 600; }
 .chart .legend { font-size: 11px; color: var(--muted); margin-bottom: 4px; display: flex; gap: 12px; flex-wrap: wrap; }
@@ -78,6 +81,9 @@ section h2 .btn { float: right; }
     <div class="tablewrap"><table id="clientsTable"></table></div></section>
   <section id="billing" hidden><h2>Hotspot &amp; subscribers <span id="billingCount" class="meta"></span></h2>
     <div id="billingBody"></div></section>
+  <section id="drift" hidden><h2>Config &amp; drift <span id="driftCount" class="meta"></span></h2>
+    <div class="tablewrap"><table id="driftTable"></table></div>
+    <pre id="driftDiff" hidden></pre></section>
   <section id="edr" hidden><h2>Endpoints (EDR agents)</h2><div id="edrBody"></div></section>
   <section><h2>Recent alerts</h2><div id="events" class="empty">No alerts yet.</div></section>
 </main>
@@ -241,6 +247,28 @@ async function refresh() {
     document.getElementById("billingBody").innerHTML = html;
   }
 
+  // config & drift
+  const dr = r.drift || { enabled: false };
+  const dlist = dr.devices || [];
+  document.getElementById("drift").hidden = !dr.enabled;
+  if (dr.enabled) {
+    const drifted = (dr.drifted || []).length;
+    document.getElementById("driftCount").textContent =
+      `(${dr.backed_up || 0} backed up${drifted ? `, ${drifted} changed` : ", all in sync"}${dr.reconcile ? ", auto-reconcile on" : ""})`;
+    document.getElementById("driftTable").innerHTML = dlist.length
+      ? `<thead><tr><th>Device</th><th>Status</th><th>Last backup</th><th></th></tr></thead><tbody>` +
+        dlist.map((d) => {
+          const changed = !!d.changed, err = d.error;
+          const badge = err ? `<span class="badge down">error</span>`
+            : changed ? `<span class="badge degraded">CHANGED</span>`
+            : `<span class="badge up">in sync</span>`;
+          return `<tr><td>${esc(d.device)}</td><td>${badge}${err ? ` ${esc(err)}` : ""}</td>
+            <td>${d.backed_up ? ago(d.backed_up) : "-"}</td>
+            <td>${changed ? `<button class="btn" data-diff="${esc(d.device)}">View diff</button>` : ""}</td></tr>`;
+        }).join("") + `</tbody>`
+      : `<tbody><tr><td class="meta">No backups collected yet — the first round establishes a baseline.</td></tr></tbody>`;
+  }
+
   const eps = r.endpoints || [];
   document.getElementById("edr").hidden = !eps.length && !r.edr_error;
   const cls = { active: "up", disconnected: "down", never_connected: "degraded", not_enrolled: "degraded", pending: "degraded" };
@@ -254,6 +282,17 @@ async function refresh() {
     : "No alerts yet.";
   document.getElementById("updated").textContent = "Updated " + new Date().toLocaleTimeString();
 }
+document.getElementById("driftTable").addEventListener("click", async (e) => {
+  const dev = e.target.dataset.diff;
+  if (!dev) return;
+  const out = document.getElementById("driftDiff");
+  out.hidden = false;
+  out.textContent = `Loading diff for ${dev}…`;
+  try {
+    const r = await (await fetch("/api/configdiff?device=" + encodeURIComponent(dev))).json();
+    out.textContent = r.diff || `No stored diff for ${dev} (need two differing snapshots).`;
+  } catch { out.textContent = "Could not load diff."; }
+});
 document.getElementById("runSpeed").addEventListener("click", async (e) => {
   e.target.disabled = true;
   try { await fetch("/api/speedtest", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); } catch {}

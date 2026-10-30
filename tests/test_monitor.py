@@ -185,3 +185,67 @@ def test_trends_persist_and_query(monkeypatch, tmp_path):
     trends = m.snapshot()["trends"]
     assert [p["hotspot"] for p in trends["billing"]] == [1, 2, 3]   # rising hotspot users over time
     assert trends["traffic"] and trends["traffic"][-1]["rx_bps"] > 0
+
+
+# ---- config backup + drift detection ---------------------------------------
+def test_backup_detects_drift_and_diffs(monkeypatch, tmp_path):
+    from vlantool import controller
+    from vlantool.monitor.engine import Status
+    m = Monitor(_net(), tmp_path / "m.db")
+    m.backup_every = 1
+    d = m.net.devices[0]
+    m.status[d.name] = Status(device=d.name, host=d.host, vendor=d.vendor)
+
+    cfgs = iter(["a\nb\n", "a\nb\n", "a\nCHANGED\n"])
+    monkeypatch.setattr(controller, "backup",
+                        lambda net, dev, out_dir=None: controller.Result(dev.name, True, output=next(cfgs)))
+
+    m._backup_device(d)
+    assert m.status[d.name].config_changed is None       # first = baseline
+    m._backup_device(d)
+    assert m.status[d.name].config_changed is None       # identical = no drift
+    m._backup_device(d)
+    assert m.status[d.name].config_changed                # third differs = drift
+    diff = m.config_diff(d.name)
+    assert "-b" in diff and "+CHANGED" in diff
+
+    snap_drift = m.snapshot()["drift"]
+    assert snap_drift["enabled"] and d.name in snap_drift["drifted"]
+    assert any(x["device"] == d.name and x["changed"] for x in snap_drift["devices"])
+
+
+def test_backup_reports_error(monkeypatch, tmp_path):
+    from vlantool import controller
+    from vlantool.monitor.engine import Status
+    m = Monitor(_net(), tmp_path / "m.db")
+    m.backup_every = 1
+    d = m.net.devices[0]
+    m.status[d.name] = Status(device=d.name, host=d.host, vendor=d.vendor)
+    monkeypatch.setattr(controller, "backup",
+                        lambda net, dev, out_dir=None: controller.Result(dev.name, False, error="auth failed"))
+    m._backup_device(d)
+    assert m.status[d.name].config_error == "auth failed"
+    assert m.config_diff(d.name) == ""                   # nothing stored
+
+
+def test_up_command_pushes_then_serves(monkeypatch, tmp_path):
+    from vlantool import cli
+    net_file = tmp_path / "net.yaml"
+    net_file.write_text(
+        "vlans:\n  - {id: 10, name: USERS, gateway: 192.168.88.1/24}\n"
+        "devices:\n  - {name: hap, vendor: mikrotik_routeros, host: 10.0.0.1, username: admin, routing: all}\n")
+    pushed, served = [], {}
+    monkeypatch.setattr(cli, "push_device",
+                        lambda net, dev, **kw: pushed.append(dev.name) or type("R", (), {"device": dev.name, "ok": True, "output": "ok"})())
+
+    def fake_serve(file, **kw):
+        served.update(kw)
+    monkeypatch.setitem(__import__("sys").modules, "vlantool.web.server",
+                        type("M", (), {"serve": staticmethod(fake_serve)}))
+    monkeypatch.setenv("VLANTOOL_PASSWORD", "x")
+    args = type("A", (), {"file": str(net_file), "no_push": False, "yes": True, "no_save": False,
+                          "username": None, "password": None, "secret": None, "backup_every": 300,
+                          "db": None, "host": "127.0.0.1", "port": 8080})()
+    cli.cmd_up(args)
+    assert pushed == ["hap"]
+    assert served["monitor"] is True and served["backup_default"] == 300

@@ -92,6 +92,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"running": False})
             self._json({"latest": self.monitor.latest_speedtest(),
                         "history": self.monitor.speedtest_history()})
+        elif self.path.startswith("/api/configdiff"):
+            if self.monitor is None:
+                return self._json({"error": "monitoring is not running"}, 409)
+            from urllib.parse import parse_qs, urlparse
+            device = (parse_qs(urlparse(self.path).query).get("device") or [""])[0]
+            self._json({"device": device, "diff": self.monitor.config_diff(device)})
         elif self.path == "/api/vendors":
             self._json([{"key": p.key, "title": p.title, "covers": p.covers,
                          "pushable": bool(p.pushable and p.netmiko_type),
@@ -155,13 +161,17 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def serve(file: str, host: str = "127.0.0.1", port: int = 8080, open_browser: bool = True,
-          monitor: bool = False, db: str | None = None) -> None:
+          monitor: bool = False, db: str | None = None, backup_default: float = 0) -> None:
     Handler.path_file = Path(file)
     page = ""
     if monitor:
         from ..monitor.engine import Monitor
         net = model.load(file)
         Handler.monitor = Monitor(net, db or Path(file).with_suffix(".monitor.db"))
+        # `vlantool up` turns on config backup + drift detection even if the
+        # network file didn't set monitoring.backup_every itself.
+        if backup_default and not Handler.monitor.backup_every:
+            Handler.monitor.backup_every = backup_default
         Handler.monitor.start()
         page = "monitor"
     httpd = ThreadingHTTPServer((host, port), Handler)

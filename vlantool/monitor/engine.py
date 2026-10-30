@@ -26,6 +26,8 @@ host and measures its internet path.
 """
 from __future__ import annotations
 
+import difflib
+import hashlib
 import json
 import sqlite3
 import threading
@@ -57,6 +59,10 @@ class Status:
     clients: list[dict] = field(default_factory=list)         # connected devices seen by this box
     sessions: dict[str, list] = field(default_factory=dict)   # {hotspot: [...], pppoe: [...]} live billing sessions
     collect_error: str | None = None
+    config_backed_up: float | None = None    # last successful config backup
+    config_changed: float | None = None      # last time the running config changed (drift)
+    config_sha: str | None = None
+    config_error: str | None = None
 
 
 class Monitor:
@@ -69,6 +75,10 @@ class Monitor:
         self.want_clients = cfg.get("clients", True)
         self.speedtest_every = float(cfg.get("speedtest_every", 0))
         self.speedtest_cfg = cfg.get("speedtest") or {}
+        self.backup_every = float(cfg.get("backup_every", 0))     # config backup + drift detection (0 = off)
+        self.reconcile = bool(cfg.get("reconcile", False))        # auto-push generated config on drift (opt-in)
+        self.backup_keep = int(cfg.get("backup_keep", 10))
+        self._last_backup: dict[str, float] = {}
         self.webhook = cfg.get("webhook")
         self.telegram = cfg.get("telegram") or {}
         self.db = sqlite3.connect(str(db_path), check_same_thread=False)
@@ -79,6 +89,8 @@ class Monitor:
             CREATE TABLE IF NOT EXISTS traffic (ts REAL, device TEXT, iface TEXT, rx_bps REAL, tx_bps REAL);
             CREATE TABLE IF NOT EXISTS speedtest (ts REAL, down_mbps REAL, up_mbps REAL, ping_ms REAL);
             CREATE TABLE IF NOT EXISTS billing_samples (ts REAL, hotspot INTEGER, pppoe INTEGER);
+            CREATE TABLE IF NOT EXISTS config_snaps (ts REAL, device TEXT, sha TEXT, text TEXT);
+            CREATE INDEX IF NOT EXISTS config_dev_ts ON config_snaps (device, ts);
             CREATE INDEX IF NOT EXISTS samples_dev_ts ON samples (device, ts);
             CREATE INDEX IF NOT EXISTS traffic_dev_ts ON traffic (device, ts);
         """)
@@ -228,6 +240,97 @@ class Monitor:
                 "SELECT ts, down_mbps, up_mbps FROM speedtest ORDER BY ts DESC LIMIT ?", (limit,)).fetchall()
         return [{"ts": t, "down_mbps": d, "up_mbps": u} for t, d, u in reversed(rows)]
 
+    # -------------------------------------------- config backup & drift
+    def _backup_device(self, d: Device) -> None:
+        """Pull the running config, store it, and alert if it changed since last time."""
+        from .. import controller
+        s = self.status.get(d.name)
+        if s is None:
+            return
+        try:
+            r = controller.backup(self.net, d)
+        except Exception as exc:
+            s.config_error = str(exc).splitlines()[0][:200]
+            return
+        if not r.ok:
+            s.config_error = r.error
+            return
+        s.config_error = None
+        text = r.output
+        sha = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+        now = time.time()
+        with self.lock:
+            prev = self.db.execute(
+                "SELECT sha FROM config_snaps WHERE device=? ORDER BY ts DESC LIMIT 1", (d.name,)).fetchone()
+            s.config_backed_up = now
+            s.config_sha = sha
+            if prev is None:
+                self.db.execute("INSERT INTO config_snaps VALUES (?,?,?,?)", (now, d.name, sha, text))
+            elif prev[0] != sha:
+                self.db.execute("INSERT INTO config_snaps VALUES (?,?,?,?)", (now, d.name, sha, text))
+                s.config_changed = now
+                # keep only the most recent backup_keep snapshots per device
+                self.db.execute(
+                    "DELETE FROM config_snaps WHERE device=? AND ts NOT IN "
+                    "(SELECT ts FROM config_snaps WHERE device=? ORDER BY ts DESC LIMIT ?)",
+                    (d.name, d.name, self.backup_keep))
+            self.db.commit()
+        if prev is not None and prev[0] != sha:
+            msg = f"{d.name} config CHANGED (drift detected)"
+            with self.lock:
+                self.db.execute("INSERT INTO events VALUES (?,?,?,?)", (now, d.name, "drift", msg))
+                self.db.commit()
+            print(time.strftime("%H:%M:%S"), "ALERT", msg, flush=True)
+            threading.Thread(target=self._notify, args=(msg,), daemon=True).start()
+            if self.reconcile:
+                self._reconcile(d)
+
+    def _reconcile(self, d: Device) -> None:
+        """Opt-in: push the generated config back to a drifted device."""
+        from ..push import push_device
+        from ..vendors import get as get_vendor
+        if not (get_vendor(d.vendor).pushable and d.host):
+            return
+        try:
+            r = push_device(self.net, d, save=True)
+            ok = r.ok
+        except Exception as exc:
+            ok = False
+            r = type("R", (), {"output": str(exc)[:200]})()
+        msg = f"{d.name} auto-reconcile {'OK' if ok else 'FAILED'}: pushed generated config"
+        with self.lock:
+            self.db.execute("INSERT INTO events VALUES (?,?,?,?)", (time.time(), d.name, "reconcile", msg))
+            self.db.commit()
+        print(time.strftime("%H:%M:%S"), "RECONCILE", msg, flush=True)
+        threading.Thread(target=self._notify, args=(msg,), daemon=True).start()
+
+    def run_backups(self) -> None:
+        from .. import controller
+        now = time.time()
+        due = [d for d in self.net.devices
+               if controller._manageable(d)[0]
+               and (d.options.get("monitor") or {}).get("backup", True)
+               and now - self._last_backup.get(d.name, 0) >= self.backup_every]
+        for d in due:
+            self._last_backup[d.name] = now
+        if due:
+            with ThreadPoolExecutor(max_workers=min(8, len(due))) as pool:
+                list(pool.map(self._backup_device, due))
+
+    def config_diff(self, device: str) -> str:
+        """Unified diff between the two most recent config snapshots of a device."""
+        with self.lock:
+            rows = self.db.execute(
+                "SELECT ts, text FROM config_snaps WHERE device=? ORDER BY ts DESC LIMIT 2", (device,)).fetchall()
+        if len(rows) < 2:
+            return ""
+        (new_ts, new), (old_ts, old) = rows[0], rows[1]
+        diff = difflib.unified_diff(
+            old.splitlines(), new.splitlines(),
+            fromfile=f"{device} @ {time.strftime('%Y-%m-%d %H:%M', time.localtime(old_ts))}",
+            tofile=f"{device} @ {time.strftime('%Y-%m-%d %H:%M', time.localtime(new_ts))}", lineterm="")
+        return "\n".join(diff)
+
     # ----------------------------------------------------------- trends
     def traffic_trend(self, limit: int = 60) -> list[dict]:
         """Network-wide throughput over time: bps summed across interfaces per round."""
@@ -261,6 +364,8 @@ class Monitor:
                 and now - self._last_speedtest >= self.speedtest_every:
             self._last_speedtest = now
             threading.Thread(target=self.run_speedtest, daemon=True).start()
+        if self.backup_every:
+            self.run_backups()
 
     def check_endpoints(self) -> None:
         """EDR agent health from Wazuh; alert when an agent disconnects or reconnects."""
@@ -357,9 +462,17 @@ class Monitor:
             for row in (d.get("sessions") or {}).get("pppoe") or []:
                 pppoe.append({**row, "seen_by": d["device"]})
         billing = {"hotspot": hotspot, "pppoe": pppoe, "online": len(hotspot) + len(pppoe)}
+        drift = {"enabled": bool(self.backup_every), "reconcile": self.reconcile,
+                 "backed_up": sum(1 for d in devices if d.get("config_backed_up")),
+                 "drifted": [d["device"] for d in devices if d.get("config_changed")],
+                 "devices": [{"device": d["device"],
+                              "backed_up": d.get("config_backed_up"),
+                              "changed": d.get("config_changed"),
+                              "error": d.get("config_error")}
+                             for d in devices if d.get("config_backed_up") or d.get("config_error")]}
         return {"interval": self.interval, "devices": devices, "counts": counts,
                 "endpoints": endpoints, "edr_error": self.edr_error,
-                "clients": clients, "clients_total": len(clients), "billing": billing,
+                "clients": clients, "clients_total": len(clients), "billing": billing, "drift": drift,
                 "trends": {"traffic": self.traffic_trend(), "billing": self.billing_trend(),
                            "speedtest": self.speedtest_history(60)},
                 "speedtest": self.latest_speedtest(), "speedtest_history": self.speedtest_history(),

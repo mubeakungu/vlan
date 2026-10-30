@@ -124,6 +124,49 @@ def cmd_gui(args) -> None:
     serve(args.file, host=args.host, port=args.port, monitor=args.monitor)
 
 
+def cmd_up(args) -> None:
+    """One command: validate -> push every manageable device -> watch them.
+
+    This is the automated-lifecycle entry point: it brings the network into the
+    state described by the file, then keeps the dashboard running with config
+    backup + drift detection on so changes made out-of-band get noticed.
+    """
+    import os
+    net = _load_checked(args.file)
+    # which devices can we actually reach and push to over SSH?
+    pushable = [d for d in net.devices
+                if get(d.vendor).pushable and get(d.vendor).netmiko_type and d.host]
+    if args.no_push or not pushable:
+        if not pushable:
+            print("No pushable devices (SSH) in this file — bringing up monitoring only.")
+    else:
+        print(f"Will push config to {len(pushable)} device(s): {', '.join(d.name for d in pushable)}")
+        for dev in pushable:
+            print(f"\n===== {dev.name} ({get(dev.vendor).title}) -> {dev.host}")
+            print("\n".join(plan(net, dev)) or "(nothing to send)")
+        if not args.yes:
+            answer = input(f"\nSend this config to {len(pushable)} device(s)? Type 'yes' to continue: ")
+            if answer.strip().lower() != "yes":
+                print("Skipping push; bringing up monitoring only.")
+                pushable = []
+        if pushable:
+            password = args.password
+            if password is None and not os.environ.get("VLANTOOL_PASSWORD"):
+                password = getpass.getpass("SSH password: ")
+            failed = 0
+            for dev in pushable:
+                r = push_device(net, dev, username=args.username, password=password,
+                                secret=args.secret, save=not args.no_save)
+                print(f"\n----- {r.device}: {'OK' if r.ok else 'FAILED'}\n{r.output}")
+                failed += not r.ok
+            if failed:
+                print(f"\nwarning: {failed} device(s) failed to push; continuing to monitoring", file=sys.stderr)
+    print("\nStarting dashboard with monitoring + config drift detection ...")
+    from .web.server import serve
+    serve(args.file, host=args.host, port=args.port, monitor=True, db=args.db,
+          backup_default=args.backup_every)
+
+
 def cmd_monitor(args) -> None:
     net = _load_checked(args.file)
     if args.once:
@@ -241,6 +284,21 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--port", type=int, default=8080)
     p.add_argument("--monitor", action="store_true", help="also monitor devices (see /monitor)")
     p.set_defaults(func=cmd_gui)
+
+    p = sub.add_parser("up", help="automate the lot: validate, push every device, then watch with drift detection")
+    p.add_argument("file", nargs="?", default="network.yaml")
+    p.add_argument("--no-push", action="store_true", help="skip pushing config; just bring up monitoring")
+    p.add_argument("-y", "--yes", action="store_true", help="push without the confirmation prompt")
+    p.add_argument("--no-save", action="store_true", help="don't save the running config after pushing")
+    p.add_argument("-u", "--username", help="SSH username (default: per-device, else $VLANTOOL_USERNAME)")
+    p.add_argument("--password", help="SSH password (default: $VLANTOOL_PASSWORD, else prompt)")
+    p.add_argument("--secret", help="enable/privileged secret where the vendor needs one")
+    p.add_argument("--backup-every", type=float, default=900, dest="backup_every",
+                   help="seconds between config backups for drift detection (default 900; 0 = off)")
+    p.add_argument("--db", help="history database (default: <file>.monitor.db)")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8080)
+    p.set_defaults(func=cmd_up)
 
     p = sub.add_parser("monitor", help="watch devices: ping, ports, uptime/CPU, alerts, dashboard")
     p.add_argument("file")
