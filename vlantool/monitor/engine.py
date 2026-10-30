@@ -78,6 +78,7 @@ class Monitor:
             CREATE TABLE IF NOT EXISTS events (ts REAL, device TEXT, state TEXT, message TEXT);
             CREATE TABLE IF NOT EXISTS traffic (ts REAL, device TEXT, iface TEXT, rx_bps REAL, tx_bps REAL);
             CREATE TABLE IF NOT EXISTS speedtest (ts REAL, down_mbps REAL, up_mbps REAL, ping_ms REAL);
+            CREATE TABLE IF NOT EXISTS billing_samples (ts REAL, hotspot INTEGER, pppoe INTEGER);
             CREATE INDEX IF NOT EXISTS samples_dev_ts ON samples (device, ts);
             CREATE INDEX IF NOT EXISTS traffic_dev_ts ON traffic (device, ts);
         """)
@@ -227,12 +228,35 @@ class Monitor:
                 "SELECT ts, down_mbps, up_mbps FROM speedtest ORDER BY ts DESC LIMIT ?", (limit,)).fetchall()
         return [{"ts": t, "down_mbps": d, "up_mbps": u} for t, d, u in reversed(rows)]
 
+    # ----------------------------------------------------------- trends
+    def traffic_trend(self, limit: int = 60) -> list[dict]:
+        """Network-wide throughput over time: bps summed across interfaces per round."""
+        bucket = max(1, int(self.interval))
+        with self.lock:
+            rows = self.db.execute(
+                "SELECT CAST(ts/? AS INTEGER)*? AS b, SUM(rx_bps), SUM(tx_bps) "
+                "FROM traffic GROUP BY b ORDER BY b DESC LIMIT ?", (bucket, bucket, limit)).fetchall()
+        return [{"ts": t, "rx_bps": rx or 0, "tx_bps": tx or 0} for t, rx, tx in reversed(rows)]
+
+    def billing_trend(self, limit: int = 60) -> list[dict]:
+        with self.lock:
+            rows = self.db.execute(
+                "SELECT ts, hotspot, pppoe FROM billing_samples ORDER BY ts DESC LIMIT ?", (limit,)).fetchall()
+        return [{"ts": t, "hotspot": h, "pppoe": p} for t, h, p in reversed(rows)]
+
     def run_once(self) -> None:
         devices = [d for d in self.net.devices if d.host]
         with ThreadPoolExecutor(max_workers=min(32, max(1, len(devices)))) as pool:
             list(pool.map(self.check_device, devices))
         self.check_endpoints()
         now = time.time()
+        # record how many hotspot/PPPoE users are online, for the trend graph
+        if any(d.options.get("billing") for d in self.net.devices):
+            with self.lock:
+                hs = sum(len((s.sessions or {}).get("hotspot") or []) for s in self.status.values())
+                pp = sum(len((s.sessions or {}).get("pppoe") or []) for s in self.status.values())
+                self.db.execute("INSERT INTO billing_samples VALUES (?,?,?)", (now, hs, pp))
+                self.db.commit()
         if self.speedtest_every and not self._speedtest_running \
                 and now - self._last_speedtest >= self.speedtest_every:
             self._last_speedtest = now
@@ -336,6 +360,8 @@ class Monitor:
         return {"interval": self.interval, "devices": devices, "counts": counts,
                 "endpoints": endpoints, "edr_error": self.edr_error,
                 "clients": clients, "clients_total": len(clients), "billing": billing,
+                "trends": {"traffic": self.traffic_trend(), "billing": self.billing_trend(),
+                           "speedtest": self.speedtest_history(60)},
                 "speedtest": self.latest_speedtest(), "speedtest_history": self.speedtest_history(),
                 "events": [{"ts": t, "device": dv, "state": st, "message": m} for t, dv, st, m in rows]}
 

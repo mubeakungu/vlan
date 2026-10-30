@@ -159,3 +159,29 @@ def test_engine_aggregates_hotspot_sessions(monkeypatch, tmp_path):
     m.check_device(m.net.devices[0])
     b = m.snapshot()["billing"]
     assert b["online"] == 2 and b["hotspot"][0]["seen_by"] == "hap" and b["pppoe"][0]["user"] == "sub001"
+
+
+def test_trends_persist_and_query(monkeypatch, tmp_path):
+    seq = {"n": 0}
+
+    def fake(d, want=(), timeout=15):
+        seq["n"] += 1
+        base = seq["n"] * 1_000_000
+        hs = [{"user": f"u{i}", "ip": f"192.168.20.{10 + i}", "uptime": "5m", "in_bytes": 1, "out_bytes": 2}
+              for i in range(seq["n"])]
+        return {"stats": {}, "traffic": {"ether1": (base, base // 2)}, "sessions": {"hotspot": hs, "pppoe": []}}
+
+    monkeypatch.setattr(checks, "ssh_collect", fake)
+    data = {"vlans": [{"id": 20, "name": "GUEST", "gateway": "192.168.20.1/24"}],
+            "monitoring": {"ssh_stats_every": 0.001, "interval": 1},
+            "devices": [{"name": "hap", "vendor": "mikrotik_routeros", "host": "127.0.0.1", "username": "admin",
+                         "routing": "all",
+                         "billing": {"hotspot": {"interface": "GUEST", "plans": [{"name": "1h"}],
+                                                 "vouchers": [{"plan": "1h", "count": 1}]}}}]}
+    m = Monitor(model.from_dict(data), tmp_path / "m.db")
+    for _ in range(3):
+        m._last_stats["hap"] = 0
+        m.run_once()
+    trends = m.snapshot()["trends"]
+    assert [p["hotspot"] for p in trends["billing"]] == [1, 2, 3]   # rising hotspot users over time
+    assert trends["traffic"] and trends["traffic"][-1]["rx_bps"] > 0

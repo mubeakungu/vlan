@@ -51,6 +51,12 @@ td { padding: 5px 6px; border-top: 1px solid var(--line); }
 .tag { font-size: 10px; text-transform: uppercase; padding: 0 5px; border-radius: 8px; background: var(--line); color: var(--muted); }
 .tag.wifi { background: var(--accent); color: #fff; }
 section h2 .btn { float: right; }
+.charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+.chart h3 { font-size: 13px; margin: 0 0 2px; font-weight: 600; }
+.chart .legend { font-size: 11px; color: var(--muted); margin-bottom: 4px; display: flex; gap: 12px; flex-wrap: wrap; }
+.chart .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: baseline; }
+.chart svg { height: 120px; }
+.chart .cur { float: right; font-variant-numeric: tabular-nums; color: var(--text); font-weight: 600; }
 </style>
 </head>
 <body>
@@ -66,6 +72,7 @@ section h2 .btn { float: right; }
     <h2>Internet speed <button id="runSpeed" class="btn">Run test</button></h2>
     <div id="speedBody" class="empty">No speed test yet.</div>
   </section>
+  <section id="trends" hidden><h2>Trends</h2><div class="charts" id="trendsBody"></div></section>
   <div class="grid" id="cards"></div>
   <section id="clients" hidden><h2>Connected devices <span id="clientsCount" class="meta"></span></h2>
     <div class="tablewrap"><table id="clientsTable"></table></div></section>
@@ -99,6 +106,51 @@ function spark(history) {
     <path d="${path}" fill="none" stroke="var(--accent)" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>`;
 }
 
+// multi-series line chart: series = [{name, color, vals:[numbers|null]}], fmt formats the y value
+function linechart(title, series, fmt) {
+  const n = Math.max(...series.map((s) => s.vals.length));
+  if (n < 2) return "";
+  const all = series.flatMap((s) => s.vals).filter((v) => v !== null && v !== undefined);
+  const max = Math.max(1, ...all), w = 300, h = 120, pad = 2;
+  const x = (i) => (i * w / (n - 1)).toFixed(1);
+  const y = (v) => (h - pad - (v / max) * (h - 2 * pad)).toFixed(1);
+  const paths = series.map((s) => {
+    let d = "";
+    s.vals.forEach((v, i) => { if (v === null || v === undefined) return;
+      d += (d && s.vals[i - 1] != null ? "L" : "M") + `${x(i)},${y(v)}`; });
+    return `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="1.5" vector-effect="non-scaling-stroke"/>`;
+  }).join("");
+  const legend = series.map((s) => {
+    const last = [...s.vals].reverse().find((v) => v !== null && v !== undefined);
+    return `<span><i style="background:${s.color}"></i>${esc(s.name)} ${last != null ? esc(fmt(last)) : ""}</span>`;
+  }).join("");
+  return `<div class="chart"><h3>${esc(title)}<span class="cur">peak ${esc(fmt(max))}</span></h3>
+    <div class="legend">${legend}</div>
+    <svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img" aria-label="${esc(title)} trend">${paths}</svg></div>`;
+}
+
+function renderTrends(t) {
+  if (!t) { document.getElementById("trends").hidden = true; return; }
+  const charts = [];
+  const tr = t.traffic || [];
+  if (tr.length >= 2)
+    charts.push(linechart("Bandwidth", [
+      { name: "↓ down", color: "var(--accent)", vals: tr.map((p) => p.rx_bps) },
+      { name: "↑ up", color: "var(--degraded)", vals: tr.map((p) => p.tx_bps) }], bps));
+  const bi = t.billing || [];
+  if (bi.length >= 2 && bi.some((p) => p.hotspot || p.pppoe))
+    charts.push(linechart("Users online", [
+      { name: "hotspot", color: "var(--accent)", vals: bi.map((p) => p.hotspot) },
+      { name: "PPPoE", color: "var(--up)", vals: bi.map((p) => p.pppoe) }], (v) => Math.round(v)));
+  const sp = t.speedtest || [];
+  if (sp.length >= 2)
+    charts.push(linechart("Internet speed", [
+      { name: "down", color: "var(--accent)", vals: sp.map((p) => p.down_mbps) },
+      { name: "up", color: "var(--degraded)", vals: sp.map((p) => p.up_mbps) }], (v) => `${Math.round(v)} Mbps`));
+  document.getElementById("trends").hidden = !charts.length;
+  document.getElementById("trendsBody").innerHTML = charts.join("");
+}
+
 async function refresh() {
   let r;
   try { r = await (await fetch("/api/status")).json(); } catch { return; }
@@ -115,6 +167,8 @@ async function refresh() {
     ["Internet ↓", st && st.down_mbps !== null ? `${st.down_mbps} Mbps` : "—"],
     ...(r.billing && (r.billing.hotspot.length || r.billing.pppoe.length) ? [["Hotspot online", r.billing.online]] : []),
   ].map(([l, n]) => `<div class="tile"><div class="n" style="font-size:${String(n).length > 8 ? 17 : 26}px">${esc(n)}</div><div class="l">${l}</div></div>`).join("");
+
+  renderTrends(r.trends);
 
   const order = { down: 0, degraded: 1, unknown: 2, up: 3, "no-host": 4 };
   const devices = [...r.devices].sort((a, b) => order[a.state] - order[b.state] || a.device.localeCompare(b.device));
