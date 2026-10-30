@@ -86,8 +86,8 @@ class Vendor:
 
     def body(self) -> list[str]:
         """VLAN config followed by router, link, VPN and wireless services."""
-        from ..services import render_services
-        return self.render() + render_services(self)
+        from ..services import postprocess, render_services
+        return postprocess(self, self.render() + render_services(self))
 
     def extra_files(self) -> dict[str, str]:
         """Additional files for this device, e.g. WireGuard client configs."""

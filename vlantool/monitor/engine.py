@@ -61,12 +61,19 @@ class Monitor:
             CREATE INDEX IF NOT EXISTS samples_dev_ts ON samples (device, ts);
         """)
         self.status: dict[str, Status] = {}
+        self.endpoints: dict[str, dict] = {}   # EDR agents from Wazuh, by name
+        self.edr_error: str | None = None
+        self.wazuh = None
         self._last_stats: dict[str, float] = {}
         self._stop = threading.Event()
         self.reload(net)
 
     def reload(self, net: Network) -> None:
         self.net = net
+        api = ((net.security or {}).get("wazuh") or {}).get("api")
+        if api and api.get("url"):
+            from .wazuh import WazuhAPI
+            self.wazuh = WazuhAPI(api)
         with self.lock:
             old = self.status
             self.status = {}
@@ -117,6 +124,32 @@ class Monitor:
         devices = [d for d in self.net.devices if d.host]
         with ThreadPoolExecutor(max_workers=min(32, max(1, len(devices)))) as pool:
             list(pool.map(self.check_device, devices))
+        self.check_endpoints()
+
+    def check_endpoints(self) -> None:
+        """EDR agent health from Wazuh; alert when an agent disconnects or reconnects."""
+        expected = [e["name"] for e in self.net.endpoints if e.get("name")]
+        if not self.wazuh:
+            if expected:
+                self.edr_error = "set security.wazuh.api to see agent status"
+            return
+        try:
+            agents = {a["name"]: a for a in self.wazuh.agents()}
+            self.edr_error = None
+        except Exception as exc:
+            self.edr_error = f"Wazuh API: {str(exc).splitlines()[0][:200]}"
+            return
+        for name in expected:
+            agents.setdefault(name, {"name": name, "status": "not_enrolled", "ip": None, "os": "", "last_keepalive": None})
+        with self.lock:
+            for name, a in agents.items():
+                old = (self.endpoints.get(name) or {}).get("status")
+                if old and old != a["status"] and "active" in (old, a["status"]):
+                    msg = f"endpoint {name} EDR agent is {a['status'].upper()}, was {old}"
+                    self.db.execute("INSERT INTO events VALUES (?,?,?,?)", (time.time(), name, a["status"], msg))
+                    print(time.strftime("%H:%M:%S"), "ALERT", msg, flush=True)
+                    threading.Thread(target=self._notify, args=(msg,), daemon=True).start()
+            self.endpoints = agents
 
     def run_forever(self) -> None:
         while not self._stop.is_set():
@@ -166,7 +199,9 @@ class Monitor:
         counts: dict[str, int] = {}
         for d in devices:
             counts[d["state"]] = counts.get(d["state"], 0) + 1
+        endpoints = sorted(self.endpoints.values(), key=lambda a: (a["status"] == "active", a["name"] or ""))
         return {"interval": self.interval, "devices": devices, "counts": counts,
+                "endpoints": endpoints, "edr_error": self.edr_error,
                 "events": [{"ts": t, "device": dv, "state": st, "message": m} for t, dv, st, m in rows]}
 
     def uptime_percent(self, device: str, hours: float = 24) -> float | None:

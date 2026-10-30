@@ -12,6 +12,19 @@ monitoring:
   # webhook: https://hooks.slack.com/services/...      # optional alert destinations
   # telegram: {token: "123456:ABC...", chat_id: "987654321"}
 
+# Security: network devices send logs to Wazuh, firewalls run IPS, PCs get the Wazuh EDR agent
+security:
+  siem: 192.168.99.50
+  wazuh:
+    manager: 192.168.99.50
+    active_response: true
+    api: {url: "https://192.168.99.50:55000", user: wazuh-wui, password_env: WAZUH_API_PASSWORD}
+
+endpoints:
+  - {name: reception-pc, os: windows}
+  - {name: file-server,  os: ubuntu}
+  - {name: design-mac,   os: macos, arch: arm64}
+
 vlans:
   - {id: 10, name: USERS,   gateway: 192.168.10.1/24}
   - {id: 20, name: GUEST,   gateway: 192.168.20.1/24}
@@ -58,6 +71,8 @@ devices:
           psk: change-this-shared-secret
           local: [192.168.10.0/24]
           remote: [10.60.0.0/24]
+    security:
+      ips: prevent            # brute-force + port-scan banning on RouterOS
     wireless:
       country: kenya
       ssids:
@@ -99,6 +114,8 @@ devices:
       wan: {interface: wan1, mode: static, address: 198.51.100.7/29, gateway: 198.51.100.1}
       dns: [1.1.1.1, 8.8.8.8]
       dhcp_server: [60]
+    security:
+      ips: prevent            # FortiGate IPS sensor on every policy
     vpn:
       ipsec:
         - name: home

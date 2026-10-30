@@ -11,6 +11,7 @@ device, whatever the brand. Then watch it all from one monitoring dashboard.
 | Links | point-to-point links between devices, wired or wireless, static or OSPF routing |
 | VPN | WireGuard server with ready-to-import phone/laptop files; IPsec IKEv2 site-to-site |
 | Wireless | SSIDs mapped to VLANs, extender/repeater mode, mesh |
+| Security | IPS on firewalls, syslog to a SIEM, Wazuh EDR agents for Windows/Linux/macOS |
 | Monitoring | ping, port checks, uptime/CPU over SSH, 24h history, down/up alerts (webhook, Telegram), dashboard |
 
 See `examples/full-network.yaml` for every feature in one file.

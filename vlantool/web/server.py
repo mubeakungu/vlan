@@ -44,6 +44,13 @@ def build(data: dict, secrets_path: Path | None = None) -> dict:
                 text += f"\n# ===== {name} (WireGuard client file) =====\n{content}"
             configs[dev.name] = {"vendor": p.title, "text": text,
                                  "pushable": bool(p.pushable and p.netmiko_type and dev.host)}
+        from ..edr import files as edr_files
+        scripts = edr_files(net)
+        if scripts:
+            configs["endpoints (EDR)"] = {
+                "vendor": "Wazuh EDR: manager setup and agent installers",
+                "text": "\n".join(f"# ===== {name} =====\n{body}" for name, body in scripts.items()),
+                "pushable": False}
     return {"errors": errors, "warnings": warnings, "configs": configs}
 
 

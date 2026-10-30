@@ -102,4 +102,8 @@ def validate(net: Network) -> tuple[list[str], list[str]]:
             for vid in (p.src, p.dst):
                 if vid not in d.routed_vlans:
                     errors.append(f"{where}: policy VLAN {vid} must be in this device's 'routing'")
+    from .edr import validate as validate_edr
+    e, w = validate_edr(net)
+    errors += e
+    warnings += w
     return errors, warnings

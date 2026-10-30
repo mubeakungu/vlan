@@ -8,9 +8,9 @@ A vendor without native support gets a manual step list instead of silence.
 """
 from __future__ import annotations
 
-from . import links, router, vpn, wireless
+from . import links, router, security, vpn, wireless
 
-SERVICES = [router, links, vpn, wireless]
+SERVICES = [router, links, vpn, wireless, security]
 
 
 def render_services(plugin) -> list[str]:
@@ -18,6 +18,14 @@ def render_services(plugin) -> list[str]:
     for svc in SERVICES:
         out += svc.render(plugin)
     return out
+
+
+def postprocess(plugin, lines: list[str]) -> list[str]:
+    """Let services adjust the finished config (e.g. attach IPS to every firewall policy)."""
+    for svc in SERVICES:
+        if hasattr(svc, "postprocess"):
+            lines = svc.postprocess(plugin, lines)
+    return lines
 
 
 def service_files(plugin) -> dict[str, str]:

@@ -68,6 +68,29 @@ def cmd_generate(args) -> None:
             print(text)
             for name, content in plugin.extra_files().items():
                 print(f"----- {name} -----\n{content}")
+    if out_dir and not args.device:
+        _write_edr(net, out_dir)
+
+
+def _write_edr(net, out_dir) -> None:
+    from .edr import files
+    for rel, content in files(net).items():
+        path = out_dir / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+        print(f"wrote {path}")
+
+
+def cmd_edr(args) -> None:
+    from .edr import files
+    net = _load_checked(args.file)
+    if not files(net):
+        sys.exit("no EDR setup: add security.wazuh.manager and an 'endpoints' list")
+    if args.out:
+        _write_edr(net, Path(args.out))
+    else:
+        for rel, content in files(net).items():
+            print(f"===== {rel} =====\n{content}")
 
 
 def cmd_push(args) -> None:
@@ -133,6 +156,11 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("-d", "--device", action="append", help="only this device (repeatable)")
     p.add_argument("-o", "--out", help="write one file per device into this folder")
     p.set_defaults(func=cmd_generate)
+
+    p = sub.add_parser("edr", help="Wazuh manager setup and EDR agent scripts for your endpoints")
+    p.add_argument("file")
+    p.add_argument("-o", "--out", help="write the scripts into this folder (default: print)")
+    p.set_defaults(func=cmd_edr)
 
     p = sub.add_parser("push", help="send config to devices over SSH (needs netmiko)")
     p.add_argument("file")

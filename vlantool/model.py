@@ -87,6 +87,8 @@ class Network:
     devices: list[Device]
     monitoring: dict[str, Any] = field(default_factory=dict)
     links: list[dict[str, Any]] = field(default_factory=list)
+    security: dict[str, Any] = field(default_factory=dict)     # siem / wazuh settings
+    endpoints: list[dict[str, Any]] = field(default_factory=list)  # PCs and servers that get an EDR agent
     secrets: Any = None  # vlantool.secrets.Secrets, set by load()
 
     def device(self, name: str) -> Device:
@@ -256,4 +258,5 @@ def from_dict(data: dict) -> Network:
         ))
     from .secrets import Secrets
     return Network(vlans=vlans, devices=devices, monitoring=dict(data.get("monitoring") or {}),
-                   links=list(data.get("links") or []), secrets=Secrets(None))
+                   links=list(data.get("links") or []), secrets=Secrets(None),
+                   security=dict(data.get("security") or {}), endpoints=list(data.get("endpoints") or []))
