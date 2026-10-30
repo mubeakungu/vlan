@@ -161,6 +161,50 @@ devices:
 SSH stats use `VLANTOOL_USERNAME`/`VLANTOOL_PASSWORD` (or the device's
 `username`). History is kept in `<network>.monitor.db` (SQLite).
 
+## Security: IPS, log forwarding and EDR
+
+```yaml
+security:
+  siem: 192.168.99.50                 # every device sends syslog here
+  wazuh:
+    manager: 192.168.99.50
+    active_response: true             # auto-block brute-force attackers on endpoints
+    api: {url: "https://192.168.99.50:55000", user: wazuh-wui, password_env: WAZUH_API_PASSWORD}
+
+endpoints:                            # PCs and servers that get the Wazuh EDR agent
+  - {name: reception-pc, os: windows}
+  - {name: file-server,  os: ubuntu}
+  - {name: design-mac,   os: macos, arch: arm64}
+
+devices:
+  - name: office2-fw
+    vendor: fortinet
+    security: {ips: prevent}          # or detect (alert only)
+```
+
+| | IPS |
+|---|---|
+| FortiGate | IPS sensor (medium/high/critical) attached to every firewall policy |
+| OpenWrt | Snort 3 inline (prevent) or passive (detect) |
+| MikroTik | no signature IPS in RouterOS: brute-force and port-scan banning, plus `sensor:` to stream WAN traffic to a Suricata box |
+| pfSense/OPNsense, Cisco, Juniper SRX, VyOS, EdgeOS | numbered steps (Suricata, UTD Snort, IDP) |
+
+Syslog forwarding is generated for every vendor with a CLI.
+
+EDR uses [Wazuh](https://wazuh.com) (free, open source): malware and rootkit
+detection, file integrity monitoring, vulnerability detection and automatic
+blocking.
+
+```bash
+vlantool edr network.yaml -o out/
+#   out/edr/wazuh-manager-setup.sh   run once on a Linux server
+#   out/edr/reception-pc.ps1         run on each PC (PowerShell as Administrator)
+#   out/edr/file-server.sh           sudo bash on Linux / macOS
+```
+
+With `security.wazuh.api` set, `vlantool monitor` shows every endpoint's agent
+(active, disconnected, not enrolled) and alerts when one drops off.
+
 ## Trying it on a MikroTik hAP
 
 `examples/mikrotik-hap.yaml` is written for a hAP on its default config
