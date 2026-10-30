@@ -1,0 +1,25 @@
+# MikroTik hAP (ac2 / ax2 / ax3 / lite) with its default configuration:
+#   ether1 = internet, ether2-5 in the default bridge called "bridge", LAN 192.168.88.0/24.
+# This adds two VLANs routed by the hAP, each with its own DHCP server:
+#   ether4 -> USERS (192.168.10.0/24), ether5 -> GUEST (192.168.20.0/24).
+# ether2 and ether3 are left alone so your PC keeps 192.168.88.1 for management.
+vlans:
+  - id: 10
+    name: USERS
+    gateway: 192.168.10.1/24
+  - id: 20
+    name: GUEST
+    gateway: 192.168.20.1/24
+
+devices:
+  - name: hap
+    vendor: mikrotik_routeros
+    host: 192.168.88.1
+    username: admin
+    bridge: bridge          # the hAP default bridge
+    create_bridge: false    # use it instead of creating a new one
+    routing: all            # the hAP is the gateway for both VLANs
+    dhcp_server: all        # hand out addresses on both VLANs
+    access:
+      ether4: USERS
+      ether5: GUEST

@@ -63,8 +63,25 @@ and comma lists. Quote purely numeric ports in YAML (`"24":`).
 
 Device-specific options: `dot1q_encapsulation: true` (old Catalyst 3560/3750
 trunks), `port_type: tenGigabitEthernet` (TP-Link), `bridge: bridge1` and
-`create_bridge: false` (MikroTik), `vdom: root` (FortiGate),
+`create_bridge: false`, `dhcp_server: [10, 20]` and `lan_list: false` (MikroTik), `vdom: root` (FortiGate),
 `opt_start: 3` (pfSense, first free optN), `relay_upstream: eth0` (VyOS).
+
+## Trying it on a MikroTik hAP
+
+`examples/mikrotik-hap.yaml` is written for a hAP on its default config
+(ether1 internet, ether2-5 in `bridge`, LAN 192.168.88.0/24). It puts ether4
+in VLAN 10 and ether5 in VLAN 20, each with its own gateway and DHCP server,
+and leaves ether2/ether3 untouched so you keep management access.
+
+```bash
+pip install ".[push]"
+/system backup save name=before-vlan       # on the hAP first (Terminal in WinBox/WebFig)
+vlantool push examples/mikrotik-hap.yaml --dry-run
+vlantool push examples/mikrotik-hap.yaml -u admin
+```
+
+Run it from a PC plugged into ether2 or ether3. Undo with
+`/system backup load name=before-vlan`.
 
 ## Supported vendors
 

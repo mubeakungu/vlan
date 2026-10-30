@@ -84,7 +84,7 @@ def test_router_on_a_stick():
 def test_mikrotik_enables_filtering_last():
     text = render("mikrotik_routeros", routing=[10], access={"ether2": 10}, trunks={"ether1": {"allowed": "all"}})
     lines = text.strip().splitlines()
-    assert lines[-1] == "/interface bridge set bridge1 vlan-filtering=yes"
+    assert lines[-1] == "/interface bridge set [find name=bridge1] vlan-filtering=yes"
     assert "/interface bridge vlan add bridge=bridge1 vlan-ids=10 tagged=ether1,bridge1 untagged=ether2" in text
 
 
@@ -125,3 +125,14 @@ def test_web_build():
     assert result["errors"] == []
     assert result["configs"]["core-sw1"]["pushable"] is True
     assert result["configs"]["office-smart-switch"]["pushable"] is False
+
+
+def test_mikrotik_existing_bridge_with_dhcp_server():
+    text = render("mikrotik_routeros", bridge="bridge", create_bridge=False, routing="all",
+                  dhcp_server=[10], access={"ether4": 10})
+    assert "/interface bridge add" not in text
+    assert "/interface bridge port set [find interface=ether4] pvid=10" in text
+    assert "/ip pool add name=pool-vlan10 ranges=192.168.10.10-192.168.10.254" in text
+    assert "/ip dhcp-server network add address=192.168.10.0/24 gateway=192.168.10.1" in text
+    assert "/interface list member add list=LAN interface=vlan10-USERS" in text
+    assert "dhcp-relay add name=relay10" not in text  # local DHCP server wins over relay

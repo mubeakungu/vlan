@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from xml.sax.saxutils import escape
 
+from .. import model
 from .base import Vendor
 
 
@@ -21,16 +22,22 @@ class MikroTik(Vendor):
         l3_parent = parent or br
         if switching:
             out.append("# VLAN filtering stays off until the end so you are not locked out mid-way")
-            if self.dev.options.get("create_bridge", True):
+            create = self.dev.options.get("create_bridge", True)
+            if create:
                 out.append(f"/interface bridge add name={br} vlan-filtering=no")
+                port_cmd = f"/interface bridge port add bridge={br} interface={{port}}"
+            else:
+                # existing bridge (e.g. the default 'bridge' on hAP/hEX): change the ports already in it
+                out.append(f"/interface bridge set [find name={br}] vlan-filtering=no")
+                port_cmd = "/interface bridge port set [find interface={port}]"
             for port, vid in self.dev.access.items():
-                out.append(f"/interface bridge port add bridge={br} interface={port} pvid={vid} "
-                           f"frame-types=admit-only-untagged-and-priority-tagged")
+                out.append(port_cmd.format(port=port)
+                           + f" pvid={vid} frame-types=admit-only-untagged-and-priority-tagged")
             for t in self.trunks:
                 if t.native:
-                    out.append(f"/interface bridge port add bridge={br} interface={t.port} pvid={t.native} frame-types=admit-all")
+                    out.append(port_cmd.format(port=t.port) + f" pvid={t.native} frame-types=admit-all")
                 else:
-                    out.append(f"/interface bridge port add bridge={br} interface={t.port} frame-types=admit-only-vlan-tagged")
+                    out.append(port_cmd.format(port=t.port) + " frame-types=admit-only-vlan-tagged")
             routed = set(self.dev.routed_vlans) if not parent else set()
             for v in self.vlans:
                 tagged = self.tagged_ports(v.id) + ([br] if v.id in routed else [])
@@ -41,14 +48,26 @@ class MikroTik(Vendor):
                 if untagged:
                     line += f" untagged={','.join(untagged)}"
                 out.append(line + f' comment="{v.name}"')
+        dhcp_ids = set(model.parse_vlan_list(self.dev.options.get("dhcp_server"), self.net.vlans))
         for v in self.routed:
             name = f"vlan{v.id}-{v.name}"
             out += [f"/interface vlan add interface={l3_parent} name={name} vlan-id={v.id}",
                     f"/ip address add address={v.ip}/{v.prefixlen} interface={name}"]
+            if self.dev.options.get("lan_list", True):
+                # default hAP/hEX firewall only trusts the LAN interface list
+                out.append(f"/interface list member add list=LAN interface={name}")
+            if v.id in dhcp_ids:
+                net = v.interface.network
+                first, last = net.network_address + 1, net.broadcast_address - 1
+                pool = f"{first + 9 if net.num_addresses > 32 else first}-{last}"
+                out += [f"/ip pool add name=pool-vlan{v.id} ranges={pool}",
+                        f"/ip dhcp-server add name=dhcp-vlan{v.id} interface={name} address-pool=pool-vlan{v.id} disabled=no",
+                        f"/ip dhcp-server network add address={net} gateway={v.ip} dns-server={v.ip}"]
             for n, r in enumerate(v.dhcp_relay):
-                out.append(f"/ip dhcp-relay add name=relay{v.id}-{n} interface={name} dhcp-server={r} disabled=no")
+                if v.id not in dhcp_ids:
+                    out.append(f"/ip dhcp-relay add name=relay{v.id}-{n} interface={name} dhcp-server={r} disabled=no")
         if switching:
-            out.append(f"/interface bridge set {br} vlan-filtering=yes")
+            out.append(f"/interface bridge set [find name={br}] vlan-filtering=yes")
         return out
 
 
