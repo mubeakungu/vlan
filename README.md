@@ -202,6 +202,40 @@ then launches the dashboard with config backup + drift detection turned on
 (`--backup-every`, default 900s). From then on it keeps the network matching
 the file and flags anything that drifts.
 
+## Deploying on Render (or any host)
+
+A [`render.yaml`](render.yaml) Blueprint is included. In Render:
+**New + → Blueprint → pick this repo**. It builds `pip install ".[push]"` and
+starts the editor + dashboard as one web service. Then open the service URL:
+`/` is the config editor, `/monitor` is the dashboard.
+
+Set these in the Render dashboard before you expose it:
+
+| Env var | What it does |
+|---------|--------------|
+| `VLANTOOL_AUTH` | `user:pass` — HTTP login guarding the whole site. **Set this.** Without it the editor and the Push-over-SSH endpoint are open to anyone with the URL. |
+| `NETWORK_FILE` | which network file to open (default `examples/full-network.yaml`) |
+| `VLANTOOL_USERNAME` / `VLANTOOL_PASSWORD` | SSH credentials for push / live monitoring (optional) |
+
+To run the server anywhere else, bind a public interface and set auth:
+
+```bash
+VLANTOOL_AUTH=admin:secret vlantool gui network.yaml --monitor --host 0.0.0.0 --port 8080
+```
+
+Two things to know about a cloud deploy:
+
+- **Reachability.** A cloud service can only push to and monitor devices it can
+  actually reach over the network — devices with public IPs or reachable through
+  a VPN/tunnel. It can't touch a home/office LAN behind NAT. The editor
+  (generate + download config) works regardless.
+- **Persistence.** The container filesystem is ephemeral, so edits saved from
+  the editor and the monitoring history (`<network>.monitor.db`) reset on each
+  deploy unless you attach a persistent disk. Keep the network file in git as
+  the source of truth.
+
+A `/healthz` endpoint (unauthenticated) is provided for platform health checks.
+
 ## Security: IPS, log forwarding and EDR
 
 ```yaml

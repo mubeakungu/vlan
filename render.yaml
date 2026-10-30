@@ -1,0 +1,40 @@
+# Render Blueprint — deploy vlantool (config editor + monitoring dashboard)
+# as a single web service.  Spec: https://render.com/docs/blueprint-spec
+#
+# In Render: New + -> Blueprint -> pick this repo. It reads this file.
+# After the first deploy, open the service URL:
+#   /          config editor (generate + download, push over SSH)
+#   /monitor   live dashboard (reachability, bandwidth, clients, drift, ...)
+#
+# IMPORTANT before you expose it: set VLANTOOL_AUTH (below). Without it the
+# editor and the "Push over SSH" endpoint are open to anyone with the URL.
+# And note: a Render service is in the cloud, so it can only PUSH to / MONITOR
+# devices it can actually reach over the network -- devices with public IPs or
+# reachable through a VPN/tunnel, not a home LAN behind NAT. The editor
+# (generate + download config) works regardless.
+
+services:
+  - type: web
+    name: vlantool
+    runtime: python
+    plan: free
+    buildCommand: pip install ".[push]"
+    startCommand: vlantool gui "$NETWORK_FILE" --monitor --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      # which network file to open (relative to the repo root)
+      - key: NETWORK_FILE
+        value: examples/full-network.yaml
+      # site login as user:pass -- SET THIS in the Render dashboard before exposing
+      - key: VLANTOOL_AUTH
+        sync: false
+      # SSH credentials for push / live monitoring (optional; only if reachable)
+      - key: VLANTOOL_USERNAME
+        sync: false
+      - key: VLANTOOL_PASSWORD
+        sync: false
+      - key: PYTHON_VERSION
+        value: "3.12.5"
+      - key: PYTHONUNBUFFERED
+        value: "1"

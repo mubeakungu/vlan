@@ -7,7 +7,9 @@ because the push endpoint can change your devices.
 """
 from __future__ import annotations
 
+import base64
 import json
+import os
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -57,9 +59,31 @@ def build(data: dict, secrets_path: Path | None = None) -> dict:
 class Handler(BaseHTTPRequestHandler):
     path_file: Path
     monitor = None  # vlantool.monitor.engine.Monitor when monitoring is on
+    auth = None     # "user:pass" from $VLANTOOL_AUTH guards every request when set
 
     def log_message(self, fmt, *args):  # keep the terminal quiet
         pass
+
+    def _authed(self) -> bool:
+        """When $VLANTOOL_AUTH is set, require matching HTTP basic auth.
+
+        This is what makes a public deploy (e.g. Render) safe: the editor and
+        push endpoints change config, so they must not be open to the world.
+        """
+        if not self.auth:
+            return True
+        header = self.headers.get("Authorization", "")
+        if header.startswith("Basic "):
+            try:
+                if base64.b64decode(header[6:]).decode() == self.auth:
+                    return True
+            except (ValueError, UnicodeDecodeError):
+                pass
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="vlantool"')
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return False
 
     def _send(self, body: bytes, ctype: str = "application/json", code: int = 200) -> None:
         self.send_response(code)
@@ -76,6 +100,10 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(n) or b"{}")
 
     def do_GET(self):
+        if self.path == "/healthz":          # unauthenticated: for platform health checks
+            return self._json({"ok": True})
+        if not self._authed():
+            return
         if self.path in ("/", "/index.html"):
             self._send(STATIC.read_bytes(), "text/html; charset=utf-8")
         elif self.path == "/monitor":
@@ -111,6 +139,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(b"not found", "text/plain", 404)
 
     def do_POST(self):
+        if not self._authed():
+            return
         # reject cross-site form posts: the browser page always sends JSON
         if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
             return self._json({"error": "JSON only"}, 415)
@@ -163,6 +193,7 @@ class Handler(BaseHTTPRequestHandler):
 def serve(file: str, host: str = "127.0.0.1", port: int = 8080, open_browser: bool = True,
           monitor: bool = False, db: str | None = None, backup_default: float = 0) -> None:
     Handler.path_file = Path(file)
+    Handler.auth = os.environ.get("VLANTOOL_AUTH") or None
     page = ""
     if monitor:
         from ..monitor.engine import Monitor
@@ -176,8 +207,9 @@ def serve(file: str, host: str = "127.0.0.1", port: int = 8080, open_browser: bo
         page = "monitor"
     httpd = ThreadingHTTPServer((host, port), Handler)
     url = f"http://{host}:{port}/{page}"
-    print(f"vlantool GUI editing {Handler.path_file} at {url}  (Ctrl+C to stop)")
-    if open_browser:
+    print(f"vlantool GUI editing {Handler.path_file} at {url}  (Ctrl+C to stop)", flush=True)
+    # only pop a browser on a local run; a server deploy (0.0.0.0) is headless
+    if open_browser and host in ("127.0.0.1", "localhost", "::1"):
         try:
             webbrowser.open(url)
         except Exception:

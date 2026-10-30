@@ -5,3 +5,8 @@ out/
 *.secrets.json
 *.monitor.db
 vlantool-monitor.db
+
+# Python build artifacts
+build/
+dist/
+*.egg-info/

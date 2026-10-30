@@ -20,4 +20,4 @@ vlantool = "vlantool.cli:main"
 include = ["vlantool*"]
 
 [tool.setuptools.package-data]
-"vlantool.web" = ["index.html"]
+"vlantool.web" = ["index.html", "monitor.html"]
