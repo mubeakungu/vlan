@@ -41,6 +41,9 @@ label { font-size: 12px; color: var(--muted); display: block; }
 .msg.warn { background: var(--warn-bg); color: var(--warn); }
 .tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 8px; }
 .tabs button.on { border-color: var(--accent); color: var(--accent); }
+.subtabs { gap: 3px; margin: -2px 0 8px; }
+.subtabs button { padding: 2px 9px; font-size: 12px; border-radius: 12px; color: var(--muted); }
+.subtabs button.on { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
 pre { background: var(--code); border: 1px solid var(--line); border-radius: 6px; padding: 10px; overflow: auto; max-height: 65vh; font-size: 12px; margin: 0; }
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
 .sub { color: var(--muted); font-size: 12px; }
@@ -92,6 +95,7 @@ dialog::backdrop { background: rgba(0,0,0,.4); }
       <h2>Generated config</h2>
       <div id="msgs"></div>
       <div class="tabs" id="tabs"></div>
+      <div class="tabs subtabs" id="sections"></div>
       <div class="row" id="actions" hidden>
         <span class="sub" id="vendorName"></span>
         <span style="flex:1"></span>
@@ -222,6 +226,67 @@ function renderDevices() {
   }).join("") || `<p class="sub">No devices yet.</p>`;
 }
 
+// group a "# ---- X ----" marker into a friendly menu label
+function sectionLabel(marker) {
+  const m = marker.toLowerCase();
+  if (m.startsWith("router")) return "Router";
+  if (m.startsWith("link ")) return "Point-to-point";
+  if (m.startsWith("wireguard") || m.startsWith("ipsec")) return "VPN";
+  if (m.startsWith("wireless")) return "Wireless";
+  if (m.startsWith("content filtering")) return "Filtering";
+  if (m.startsWith("security")) return "Security / IPS";
+  if (m.startsWith("billing")) return "Billing";
+  if (m.startsWith("vlan interface")) return "VLANs";
+  return marker.replace(/\(.*?\)/g, "").trim().replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// split a device config into labelled sections by its "# ---- X ----" headers
+function splitSections(text) {
+  const lines = text.split("\n");
+  const sects = [];
+  let cur = { label: "VLANs & interfaces", lines: [] };
+  const re = /^[#!;<].*?----\s*(.+?)\s*----/;   // comment line carrying a marker
+  for (const ln of lines) {
+    const m = ln.match(re);
+    if (m) {
+      if (cur.lines.length) sects.push(cur);
+      cur = { label: sectionLabel(m[1]), lines: [ln] };
+    } else {
+      cur.lines.push(ln);
+    }
+  }
+  if (cur.lines.length) sects.push(cur);
+  // merge sections that share a label (several links, WireGuard+IPsec -> VPN)
+  const merged = new Map();
+  for (const s of sects) {
+    if (merged.has(s.label)) merged.get(s.label).push("", ...s.lines);
+    else merged.set(s.label, [...s.lines]);
+  }
+  return merged;   // Map<label, lines[]>
+}
+
+// cross-cutting "Firewall" view: every firewall / NAT / policy line in the config
+const FW_RE = /firewall|masquerade|isolate|\bnat\b|dst-nat|\bzone\b|ips-sensor|\bdmz\b|policy|\bfilter\b|port.?forward|webfilter|snort|suricata|dstnat|srcnat/i;
+
+let currentSection = "All";
+
+function renderSections() {
+  const c = current && configs[current];
+  if (!c) { $("sections").innerHTML = ""; return; }
+  const merged = splitSections(c.text);
+  const labels = [...merged.keys()];
+  const hasFw = c.text.split("\n").some((l) => FW_RE.test(l));
+  const chips = ["All", ...labels, ...(hasFw ? ["Firewall"] : [])];
+  if (!chips.includes(currentSection)) currentSection = "All";
+  $("sections").innerHTML = chips.map((s) =>
+    `<button class="${s === currentSection ? "on" : ""}" data-sec="${esc(s)}">${esc(s)}${s === "Firewall" ? " 🔥" : ""}</button>`).join("");
+  let body;
+  if (currentSection === "All") body = c.text;
+  else if (currentSection === "Firewall") body = c.text.split("\n").filter((l) => FW_RE.test(l) || /----/.test(l)).join("\n").trim() || "No firewall rules for this device.";
+  else body = (merged.get(currentSection) || []).join("\n");
+  $("out").textContent = body;
+}
+
 function renderOutput(result) {
   configs = result.configs || {};
   $("msgs").innerHTML = (result.errors || []).map((e) => `<div class="msg err">${esc(e)}</div>`).join("")
@@ -232,11 +297,12 @@ function renderOutput(result) {
   $("actions").hidden = !current;
   if (current) {
     const c = configs[current];
-    $("out").textContent = c.text;
     $("vendorName").textContent = c.vendor;
     $("pushBtn").disabled = !c.pushable;
     $("pushBtn").title = c.pushable ? "" : "This device has no management IP, or its vendor cannot be pushed over SSH";
+    renderSections();
   } else {
+    $("sections").innerHTML = "";
     $("out").textContent = result.errors?.length ? "Fix the errors above to see config." : "Add a device to see its config.";
   }
 }
@@ -318,6 +384,7 @@ document.addEventListener("click", (e) => {
   if (t.dataset.delVlan !== undefined) { data.vlans.splice(t.dataset.delVlan, 1); renderAll(); }
   if (t.dataset.delDev !== undefined) { data.devices.splice(t.dataset.delDev, 1); yamlCache.splice(t.dataset.delDev, 1); renderVlans(); renderDevices(); regenerate(); }
   if (t.dataset.tab !== undefined) { current = t.dataset.tab; renderOutput({ configs, errors: [], warnings: [] }); regenerate(); }
+  if (t.dataset.sec !== undefined) { currentSection = t.dataset.sec; renderSections(); }
 });
 
 $("addVlan").onclick = () => {
@@ -351,7 +418,7 @@ $("copyBtn").onclick = () => navigator.clipboard.writeText($("out").textContent)
 $("dlBtn").onclick = () => {
   const a = document.createElement("a");
   const ext = configs[current].vendor.startsWith("pfSense") ? "xml" : "txt";
-  a.href = URL.createObjectURL(new Blob([$("out").textContent], { type: "text/plain" }));
+  a.href = URL.createObjectURL(new Blob([configs[current].text], { type: "text/plain" }));  // always the full config
   a.download = `${current}.${ext}`; a.click();
 };
 
