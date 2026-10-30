@@ -1,7 +1,19 @@
 # vlantool
 
-Define your VLANs once, then get ready-to-paste (or push) config for every
-switch, router and firewall in your network, whatever the brand.
+Describe your whole network once (VLANs, routers, VPNs, point-to-point links,
+access points, extenders) and get ready-to-paste (or push) config for every
+device, whatever the brand. Then watch it all from one monitoring dashboard.
+
+| Module | What it does |
+|---|---|
+| VLANs | access/trunk ports, SVIs, router-on-a-stick, DHCP relay (24 platforms) |
+| Router | WAN (DHCP/static/PPPoE), NAT, DNS, DHCP servers, firewall, guest isolation, port forwards, static routes, NTP |
+| Links | point-to-point links between devices, wired or wireless, static or OSPF routing |
+| VPN | WireGuard server with ready-to-import phone/laptop files; IPsec IKEv2 site-to-site |
+| Wireless | SSIDs mapped to VLANs, extender/repeater mode, mesh |
+| Monitoring | ping, port checks, uptime/CPU over SSH, 24h history, down/up alerts (webhook, Telegram), dashboard |
+
+See `examples/full-network.yaml` for every feature in one file.
 
 ```
 network.yaml  ──►  vlantool  ──►  Cisco / Juniper / Aruba / D-Link / TP-Link / MikroTik / FortiGate / ... config
@@ -66,6 +78,88 @@ trunks), `port_type: tenGigabitEthernet` (TP-Link), `bridge: bridge1` and
 `create_bridge: false`, `dhcp_server: [10, 20]` and `lan_list: false` (MikroTik), `vdom: root` (FortiGate),
 `opt_start: 3` (pfSense, first free optN), `relay_upstream: eth0` (VyOS).
 
+## Router, links, VPN and Wi-Fi
+
+Add these sections to a device (or `links:` at the top level). Each module's
+docstring in `vlantool/services/` lists every option.
+
+```yaml
+devices:
+  - name: hap
+    vendor: mikrotik_routeros
+    routing: all
+    router:
+      wan: {interface: ether1, mode: dhcp}        # static: address + gateway; pppoe: user + password
+      dns: [1.1.1.1, 8.8.8.8]
+      dhcp_server: all
+      isolate: [GUEST]                             # internet only
+      port_forwards: [{proto: tcp, port: 8443, to: 192.168.30.10, to_port: 443}]
+    vpn:
+      wireguard:
+        address: 10.100.0.1/24
+        endpoint: myhome.ddns.net                  # what phones dial
+        peers: [{name: phone}, {name: laptop}]     # keys generated, .conf files written
+      ipsec:
+        - {name: office2, peer: 198.51.100.7, psk: long-secret, remote: [10.60.0.0/24]}
+    wireless:
+      country: kenya
+      ssids:
+        - {ssid: Home,  passphrase: "...", vlan: USERS, band: both}
+        - {ssid: Guest, passphrase: "...", vlan: GUEST, band: 2ghz}
+
+links:
+  - name: tower
+    a: {device: hap, interface: ether3, address: 10.255.0.1/30}
+    b: {device: branch, interface: eth1, address: 10.255.0.2/30}
+    routing: static                               # or ospf
+    wireless: {ssid: ptp, passphrase: "...", frequency: 5745, width: 40}   # radio link (optional)
+```
+
+Generated config per module:
+
+| | Router | Links | WireGuard | IPsec | Wi-Fi |
+|---|---|---|---|---|---|
+| MikroTik | yes | yes (+OSPF, radio) | yes | yes | yes (wifi + legacy wireless) |
+| OpenWrt | yes | yes (radio) | yes | steps | yes (AP, extender, 802.11s mesh) |
+| Cisco IOS | yes (zone firewall) | yes (+OSPF) | n/a | yes | steps |
+| EdgeRouter | yes | yes (+OSPF) | yes | yes | n/a |
+| VyOS | yes | yes (+OSPF) | yes | yes | n/a |
+| FortiGate | yes | yes | n/a | yes | steps |
+| Juniper | steps | yes (+OSPF) | steps | steps | n/a |
+| Everything else (UniFi, Omada, airMAX, TP-Link...) | numbered manual steps in the output |
+
+WireGuard private keys are created once and stored in `<network>.secrets.json`
+next to your file, so regenerating never breaks working tunnels. Keep that file
+private. `vlantool generate file.yaml -o out/` writes `<device>-<peer>.conf`
+for each phone/laptop; import it into the WireGuard app.
+
+Devices you only want to watch (APs, radios, cameras, servers) use
+`vendor: generic`.
+
+## Monitoring
+
+```bash
+vlantool monitor network.yaml            # dashboard at http://127.0.0.1:8080/monitor
+vlantool monitor network.yaml --once     # one round, printed as a table
+vlantool gui network.yaml --monitor      # editor and dashboard together
+```
+
+```yaml
+monitoring:
+  interval: 30                 # seconds between checks
+  ssh_stats_every: 300         # uptime/CPU login (MikroTik, Cisco, Arista, Junos, EdgeOS, VyOS); 0 = off
+  webhook: https://...         # JSON POST on every alert (Slack, Discord, n8n, ...)
+  telegram: {token: "123:ABC", chat_id: "456"}
+devices:
+  - name: lobby-ap
+    vendor: generic
+    host: 192.168.99.31
+    monitor: {ports: [80, 443]}   # also check these TCP ports
+```
+
+SSH stats use `VLANTOOL_USERNAME`/`VLANTOOL_PASSWORD` (or the device's
+`username`). History is kept in `<network>.monitor.db` (SQLite).
+
 ## Trying it on a MikroTik hAP
 
 `examples/mikrotik-hap.yaml` is written for a hAP on its default config
@@ -110,6 +204,8 @@ Run it from a PC plugged into ether2 or ether3. Undo with
 | `vyos` | VyOS | yes (commit) |
 | `fortinet` | FortiGate | yes |
 | `pfsense` | pfSense / OPNsense config.xml sections | file only |
+| `openwrt` | OpenWrt 21.02+ routers and APs (uci, DSA) | yes |
+| `generic` | monitoring-only devices (APs, radios, servers, cameras) | n/a |
 | `web_gui` | Any switch with only a web page: TP-Link Easy Smart, Netgear Plus, UniFi, Omada, Zyxel GS1900... | manual steps |
 
 Anything not listed that speaks 802.1Q can use `web_gui`, which prints a

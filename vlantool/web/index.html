@@ -54,6 +54,7 @@ dialog::backdrop { background: rgba(0,0,0,.4); }
 <header>
   <h1>VLAN Tool</h1>
   <span class="file" id="file"></span>
+  <a href="/monitor" style="color:var(--accent);text-decoration:none">Monitor</a>
   <button id="yamlBtn">Edit as YAML</button>
   <button id="saveBtn" class="primary">Save</button>
 </header>
@@ -70,6 +71,14 @@ dialog::backdrop { background: rgba(0,0,0,.4); }
     <section>
       <h2>Devices <button id="addDev">+ Device</button></h2>
       <div id="devices"></div>
+    </section>
+    <section>
+      <h2>Point-to-point links</h2>
+      <textarea id="linksBox" rows="6" spellcheck="false" placeholder="- name: tower
+  a: {device: hap, interface: ether3, address: 10.255.0.1/30}
+  b: {device: branch, interface: eth1, address: 10.255.0.2/30}
+  routing: static"></textarea>
+      <p class="hint">Wired or wireless links between two devices. See README for the wireless and OSPF options.</p>
     </section>
   </div>
   <div id="yamlPane" hidden>
@@ -119,6 +128,8 @@ let vendors = [];
 let configs = {};
 let current = null;
 const $ = (id) => document.getElementById(id);
+const FORM_KEYS = ["name", "vendor", "host", "username", "vlans", "routing", "parent_interface", "access", "trunks", "policies"];
+const extras = (d) => Object.fromEntries(Object.entries(d).filter(([k]) => !FORM_KEYS.includes(k)));
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 async function api(path, body) {
@@ -201,6 +212,9 @@ function renderDevices() {
         <div><label>Access ports (port or range = VLAN)</label><textarea rows="4" data-d="${i}" data-k="access" placeholder="Gi1/0/1-12 = 10">${esc(accessToText(d.access))}</textarea></div>
         <div><label>Trunk ports (port = allowed [native N])</label><textarea rows="4" data-d="${i}" data-k="trunks" placeholder="Gi1/0/48 = all native 99">${esc(trunksToText(d.trunks))}</textarea></div>
       </div>`}
+      <div style="margin-top:8px"><label>More settings: router, vpn, wireless, mgmt, monitor (YAML)</label>
+        <textarea rows="${Math.min(14, 3 + (yamlCache[i] || "").split("\n").length)}" data-d="${i}" data-k="__extras" spellcheck="false"
+          placeholder="router:&#10;  wan: {interface: ether1, mode: dhcp}&#10;  dhcp_server: all">${esc(yamlCache[i] || "")}</textarea></div>
       ${info.policies ? `
       <div><label>Firewall policies (FROM -> TO action), one per line</label>
         <textarea rows="2" data-d="${i}" data-k="policies" placeholder="GUEST -> USERS deny">${esc((d.policies || []).map((p) => `${p.from} -> ${p.to} ${p.action || "accept"}`).join("\n"))}</textarea></div>` : ""}
@@ -227,7 +241,15 @@ function renderOutput(result) {
   }
 }
 
-function renderAll() { renderVlans(); renderDevices(); regenerate(); }
+let yamlCache = [];
+async function refreshExtras() {
+  yamlCache = await Promise.all(data.devices.map(async (d) => {
+    const ex = extras(d);
+    return Object.keys(ex).length ? (await api("/api/yaml", { data: ex })).yaml.trimEnd() : "";
+  }));
+  $("linksBox").value = data.links && data.links.length ? (await api("/api/yaml", { data: data.links })).yaml.trimEnd() : "";
+}
+async function renderAll() { await refreshExtras(); renderVlans(); renderDevices(); regenerate(); }
 
 let timer;
 function regenerate() {
@@ -252,6 +274,7 @@ $("devices").addEventListener("input", (e) => {
   const { d, k, list } = e.target.dataset; if (d === undefined) return;
   const dev = data.devices[d];
   const val = e.target.value;
+  if (k === "__extras") { yamlCache[d] = val; parseExtras(Number(d), val); return; }
   if (k === "access") dev.access = textToAccess(val);
   else if (k === "trunks") dev.trunks = textToTrunks(val);
   else if (k === "policies") dev.policies = val.split("\n").map((l) => l.match(/^\s*(\S+)\s*->\s*(\S+)\s*(\S+)?/)).filter(Boolean)
@@ -261,21 +284,49 @@ $("devices").addEventListener("input", (e) => {
   if (k === "vendor") renderDevices();
   regenerate();
 });
+let extrasTimer;
+function parseExtras(i, text) {
+  clearTimeout(extrasTimer);
+  extrasTimer = setTimeout(async () => {
+    const r = await api("/api/parse", { yaml: text || "{}" });
+    if (r.error || (r.data && typeof r.data !== "object")) {
+      $("msgs").innerHTML = `<div class="msg err">${esc(data.devices[i].name)}: ${esc(r.error || "settings must be key: value pairs")}</div>`;
+      return;
+    }
+    const dev = data.devices[i];
+    for (const k of Object.keys(extras(dev))) delete dev[k];
+    Object.assign(dev, r.data || {});
+    regenerate();
+  }, 500);
+}
+$("linksBox").addEventListener("input", () => {
+  clearTimeout(extrasTimer);
+  extrasTimer = setTimeout(async () => {
+    const r = await api("/api/parse", { yaml: $("linksBox").value || "[]" });
+    if (r.error || !Array.isArray(r.data || [])) {
+      $("msgs").innerHTML = `<div class="msg err">links: ${esc(r.error || "must be a list")}</div>`;
+      return;
+    }
+    if ((r.data || []).length) data.links = r.data; else delete data.links;
+    regenerate();
+  }, 500);
+});
 $("devices").addEventListener("change", (e) => { if (e.target.dataset.k === "name") renderDevices(); });
 
 document.addEventListener("click", (e) => {
   const t = e.target;
   if (t.dataset.delVlan !== undefined) { data.vlans.splice(t.dataset.delVlan, 1); renderAll(); }
-  if (t.dataset.delDev !== undefined) { data.devices.splice(t.dataset.delDev, 1); renderAll(); }
+  if (t.dataset.delDev !== undefined) { data.devices.splice(t.dataset.delDev, 1); yamlCache.splice(t.dataset.delDev, 1); renderVlans(); renderDevices(); regenerate(); }
   if (t.dataset.tab !== undefined) { current = t.dataset.tab; renderOutput({ configs, errors: [], warnings: [] }); regenerate(); }
 });
 
 $("addVlan").onclick = () => {
   const next = Math.max(0, ...data.vlans.map((v) => v.id || 0)) + 10;
-  data.vlans.push({ id: next, name: `VLAN${next}` }); renderAll();
+  data.vlans.push({ id: next, name: `VLAN${next}` }); renderVlans(); regenerate();
 };
 $("addDev").onclick = () => {
-  data.devices.push({ name: `switch${data.devices.length + 1}`, vendor: "cisco_ios", vlans: "all" }); renderAll();
+  data.devices.push({ name: `switch${data.devices.length + 1}`, vendor: "cisco_ios", vlans: "all" });
+  yamlCache.push(""); renderDevices(); regenerate();
 };
 
 $("yamlBtn").onclick = async () => {
@@ -287,7 +338,7 @@ $("yamlBtn").onclick = async () => {
 $("applyYaml").onclick = async () => {
   const r = await api("/api/parse", { yaml: $("yamlBox").value });
   if (r.error) { $("msgs").innerHTML = `<div class="msg err">${esc(r.error)}</div>`; return; }
-  data = { vlans: [], devices: [], ...r.data }; renderAll();
+  data = { vlans: [], devices: [], ...r.data }; await renderAll();
 };
 $("saveBtn").onclick = async () => {
   if (!$("yamlPane").hidden) await $("applyYaml").onclick();
