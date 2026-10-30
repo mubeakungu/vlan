@@ -5,7 +5,9 @@ import pytest
 from vlantool import model
 from vlantool.cli import main
 from vlantool.validate import validate
-from vlantool.vendors import PLUGINS, get
+from vlantool.vendors import PLUGINS as ALL_PLUGINS, get
+
+PLUGINS = [p for p in ALL_PLUGINS if p.key != "generic"]  # monitoring-only, renders nothing
 
 BASE = {
     "vlans": [

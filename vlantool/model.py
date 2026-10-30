@@ -85,6 +85,7 @@ class Device:
 class Network:
     vlans: dict[int, Vlan]
     devices: list[Device]
+    monitoring: dict[str, Any] = field(default_factory=dict)
 
     def device(self, name: str) -> Device:
         for d in self.devices:
@@ -247,4 +248,4 @@ def from_dict(data: dict) -> Network:
             policies=policies,
             options=known,
         ))
-    return Network(vlans=vlans, devices=devices)
+    return Network(vlans=vlans, devices=devices, monitoring=dict(data.get("monitoring") or {}))

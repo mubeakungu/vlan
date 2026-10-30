@@ -20,6 +20,7 @@ from ..validate import validate
 from ..vendors import PLUGINS, get
 
 STATIC = Path(__file__).with_name("index.html")
+MONITOR_PAGE = Path(__file__).with_name("monitor.html")
 EMPTY = {"vlans": [{"id": 10, "name": "USERS", "gateway": "192.168.10.1/24"}], "devices": []}
 
 
@@ -41,6 +42,7 @@ def build(data: dict) -> dict:
 
 class Handler(BaseHTTPRequestHandler):
     path_file: Path
+    monitor = None  # vlantool.monitor.engine.Monitor when monitoring is on
 
     def log_message(self, fmt, *args):  # keep the terminal quiet
         pass
@@ -62,6 +64,15 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path in ("/", "/index.html"):
             self._send(STATIC.read_bytes(), "text/html; charset=utf-8")
+        elif self.path == "/monitor":
+            self._send(MONITOR_PAGE.read_bytes(), "text/html; charset=utf-8")
+        elif self.path == "/api/status":
+            if self.monitor is None:
+                return self._json({"running": False})
+            snap = self.monitor.snapshot()
+            for d in snap["devices"]:
+                d["uptime_24h"] = self.monitor.uptime_percent(d["device"])
+            self._json({"running": True, **snap})
         elif self.path == "/api/vendors":
             self._json([{"key": p.key, "title": p.title, "covers": p.covers,
                          "pushable": bool(p.pushable and p.netmiko_type),
@@ -94,6 +105,11 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/save":
             data = body.get("data") or {}
             self.path_file.write_text(yaml.safe_dump(data, sort_keys=False))
+            if self.monitor is not None:  # start watching newly added devices
+                try:
+                    self.monitor.reload(model.from_dict(data))
+                except (model.ModelError, ValueError, TypeError, KeyError):
+                    pass
             self._json({"saved": str(self.path_file)})
         elif self.path == "/api/push":
             result = build(body.get("data") or {})
@@ -112,10 +128,18 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "not found"}, 404)
 
 
-def serve(file: str, host: str = "127.0.0.1", port: int = 8080, open_browser: bool = True) -> None:
+def serve(file: str, host: str = "127.0.0.1", port: int = 8080, open_browser: bool = True,
+          monitor: bool = False, db: str | None = None) -> None:
     Handler.path_file = Path(file)
+    page = ""
+    if monitor:
+        from ..monitor.engine import Monitor
+        net = model.load(file)
+        Handler.monitor = Monitor(net, db or Path(file).with_suffix(".monitor.db"))
+        Handler.monitor.start()
+        page = "monitor"
     httpd = ThreadingHTTPServer((host, port), Handler)
-    url = f"http://{host}:{port}/"
+    url = f"http://{host}:{port}/{page}"
     print(f"vlantool GUI editing {Handler.path_file} at {url}  (Ctrl+C to stop)")
     if open_browser:
         try:

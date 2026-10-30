@@ -93,7 +93,24 @@ def cmd_push(args) -> None:
 
 def cmd_gui(args) -> None:
     from .web.server import serve
-    serve(args.file, host=args.host, port=args.port)
+    serve(args.file, host=args.host, port=args.port, monitor=args.monitor)
+
+
+def cmd_monitor(args) -> None:
+    net = _load_checked(args.file)
+    if args.once:
+        from .monitor.engine import Monitor
+        mon = Monitor(net, ":memory:")
+        mon.run_once()
+        print(f"{'DEVICE':<22} {'HOST':<16} {'STATE':<9} {'PING':>8}  DETAILS")
+        for s in mon.snapshot()["devices"]:
+            ping = f"{s['latency_ms']} ms" if s["latency_ms"] is not None else "-"
+            details = ", ".join(f"{k}={v}" for k, v in s["stats"].items())
+            details += "".join(f" port {p} {'open' if ok else 'CLOSED'}" for p, ok in s["ports"].items())
+            print(f"{s['device']:<22} {s['host'] or '-':<16} {s['state']:<9} {ping:>8}  {details}")
+        return
+    from .web.server import serve
+    serve(args.file, host=args.host, port=args.port, monitor=True, db=args.db)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -127,7 +144,16 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("file", nargs="?", default="network.yaml")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8080)
+    p.add_argument("--monitor", action="store_true", help="also monitor devices (see /monitor)")
     p.set_defaults(func=cmd_gui)
+
+    p = sub.add_parser("monitor", help="watch devices: ping, ports, uptime/CPU, alerts, dashboard")
+    p.add_argument("file")
+    p.add_argument("--once", action="store_true", help="check every device once, print a table, exit")
+    p.add_argument("--db", help="history database (default: <file>.monitor.db)")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8080)
+    p.set_defaults(func=cmd_monitor)
 
     args = ap.parse_args(argv)
     args.func(args)

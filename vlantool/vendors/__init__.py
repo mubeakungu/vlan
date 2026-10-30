@@ -9,6 +9,7 @@ from .aruba import ArubaAOSCX, ArubaOSSwitch
 from .base import Vendor
 from .cisco import AristaEOS, CiscoIOS, CiscoNXOS, CiscoSMB, DellOS10, DLinkDGS
 from .comware import HPComware, HuaweiVRP
+from .generic import Generic
 from .juniper import JuniperJunos
 from .routers import EdgeOS, FortiGate, MikroTik, PfSense, VyOS
 from .smallbiz import DLinkLegacy, ExtremeEXOS, FastPath, Netgear, RuckusICX, TPLinkJetStream, Zyxel
@@ -20,7 +21,7 @@ PLUGINS: list[type[Vendor]] = [
     DLinkDGS, DLinkLegacy, TPLinkJetStream, FastPath, Netgear,
     ExtremeEXOS, RuckusICX, Zyxel,
     MikroTik, EdgeOS, VyOS, FortiGate, PfSense,
-    WebGUI,
+    WebGUI, Generic,
 ]
 
 REGISTRY: dict[str, type[Vendor]] = {p.key: p for p in PLUGINS}
@@ -36,7 +37,7 @@ ALIASES = {
     "unifi": "web_gui", "omada": "web_gui", "mikrotik": "mikrotik_routeros", "routeros": "mikrotik_routeros",
     "fortigate": "fortinet", "fortios": "fortinet", "opnsense": "pfsense", "extreme": "extreme_exos",
     "ruckus": "ruckus_icx", "brocade": "ruckus_icx", "cisco_sg": "cisco_smb", "cbs": "cisco_smb",
-    "smart": "web_gui", "web": "web_gui",
+    "smart": "web_gui", "web": "web_gui", "ap": "generic", "extender": "generic", "other": "generic",
 }
 for alias, key in ALIASES.items():
     REGISTRY.setdefault(alias, REGISTRY[key])

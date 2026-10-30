@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Network Monitor</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #fff; --text: #1d2330; --muted: #667085; --line: #dde1e8; --accent: #2f6fde;
+  --up: #12b76a; --down: #f04438; --degraded: #f79009; --unknown: #98a2b3;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #111418; --panel: #1a1e24; --text: #e6e8ec; --muted: #98a2b3; --line: #2c323b; --accent: #5b8ff0; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+header { display: flex; gap: 16px; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+header h1 { font-size: 16px; margin: 0; flex: 1; }
+header a { color: var(--accent); text-decoration: none; }
+main { padding: 16px; max-width: 1300px; margin: 0 auto; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.tile { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+.tile .n { font-size: 26px; font-weight: 600; }
+.tile .l { color: var(--muted); font-size: 12px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 12px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; border-left: 4px solid var(--unknown); }
+.card.up { border-left-color: var(--up); } .card.down { border-left-color: var(--down); } .card.degraded { border-left-color: var(--degraded); }
+.card h3 { margin: 0; font-size: 14px; display: flex; justify-content: space-between; gap: 8px; }
+.badge { font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 10px; color: #fff; background: var(--unknown); text-transform: uppercase; }
+.badge.up { background: var(--up); } .badge.down { background: var(--down); } .badge.degraded { background: var(--degraded); }
+.meta { color: var(--muted); font-size: 12px; margin: 2px 0 8px; }
+dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 0 0 8px; font-size: 12px; }
+dt { color: var(--muted); } dd { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+svg { width: 100%; height: 36px; display: block; }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin-top: 16px; }
+section h2 { font-size: 14px; margin: 0 0 8px; }
+.ev { font-size: 13px; padding: 4px 0; border-bottom: 1px solid var(--line); display: flex; gap: 10px; }
+.ev time { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.empty { color: var(--muted); }
+.err { color: var(--down); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Network Monitor</h1>
+  <span class="meta" id="updated"></span>
+  <a href="/">Config editor</a>
+</header>
+<main>
+  <div id="off" class="empty" hidden>Monitoring is not running. Start it with <code>vlantool monitor network.yaml</code>.</div>
+  <div class="tiles" id="tiles"></div>
+  <div class="grid" id="cards"></div>
+  <section><h2>Recent alerts</h2><div id="events" class="empty">No alerts yet.</div></section>
+</main>
+<script>
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const ago = (t) => { if (!t) return "never"; const s = Math.round(Date.now() / 1000 - t);
+  return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : s < 86400 ? `${Math.round(s / 3600)}h ago` : `${Math.round(s / 86400)}d ago`; };
+
+function spark(history) {
+  if (!history.length) return "";
+  const vals = history.map((h) => h[1]);
+  const max = Math.max(5, ...vals.filter((v) => v !== null));
+  const w = 300, h = 36, step = w / Math.max(1, history.length - 1);
+  let path = "", gaps = "";
+  history.forEach(([, v], i) => {
+    const x = (i * step).toFixed(1);
+    if (v === null) { gaps += `<rect x="${x - 1}" y="0" width="3" height="${h}" fill="var(--down)" opacity=".5"/>`; return; }
+    const y = (h - 2 - (v / max) * (h - 6)).toFixed(1);
+    path += (path && history[i - 1]?.[1] !== null ? "L" : "M") + `${x},${y}`;
+  });
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img" aria-label="ping history">${gaps}
+    <path d="${path}" fill="none" stroke="var(--accent)" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>`;
+}
+
+async function refresh() {
+  let r;
+  try { r = await (await fetch("/api/status")).json(); } catch { return; }
+  document.getElementById("off").hidden = r.running;
+  if (!r.running) return;
+  const c = r.counts, total = r.devices.length;
+  document.getElementById("tiles").innerHTML = [
+    ["Devices", total], ["Up", c.up || 0], ["Down", c.down || 0], ["Degraded", c.degraded || 0],
+    ["Check every", `${r.interval}s`],
+  ].map(([l, n]) => `<div class="tile"><div class="n">${n}</div><div class="l">${l}</div></div>`).join("");
+
+  const order = { down: 0, degraded: 1, unknown: 2, up: 3, "no-host": 4 };
+  const devices = [...r.devices].sort((a, b) => order[a.state] - order[b.state] || a.device.localeCompare(b.device));
+  document.getElementById("cards").innerHTML = devices.map((d) => {
+    const rows = [
+      ["Ping", d.latency_ms !== null ? `${d.latency_ms} ms` : "no reply"],
+      ["Uptime 24h", d.uptime_24h !== null ? `${d.uptime_24h}%` : "-"],
+      ["State since", ago(d.last_change)],
+      ...Object.entries(d.stats || {}).map(([k, v]) => [k.replace("_", " "), v]),
+      ...Object.entries(d.ports || {}).map(([p, ok]) => [`Port ${p}`, ok ? "open" : "CLOSED"]),
+    ];
+    return `<div class="card ${d.state}">
+      <h3><span>${esc(d.device)}</span><span class="badge ${d.state}">${esc(d.state)}</span></h3>
+      <div class="meta">${esc(d.host || "no IP set")} · ${esc(d.vendor)} · checked ${ago(d.last_check)}</div>
+      <dl>${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>
+      ${d.stats_error ? `<div class="err">Stats: ${esc(d.stats_error)}</div>` : ""}
+      ${spark(d.history || [])}
+    </div>`;
+  }).join("");
+
+  document.getElementById("events").innerHTML = r.events.length
+    ? r.events.map((e) => `<div class="ev"><time>${new Date(e.ts * 1000).toLocaleString()}</time><span>${esc(e.message)}</span></div>`).join("")
+    : "No alerts yet.";
+  document.getElementById("updated").textContent = "Updated " + new Date().toLocaleTimeString();
+}
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>
