@@ -155,6 +155,7 @@ monitoring:
   interval: 30                 # seconds between checks
   ssh_stats_every: 300         # SSH login for stats/bandwidth/clients (MikroTik, Cisco, Junos, EdgeOS, VyOS...); 0 = off
   traffic: true                # per-interface throughput + byte totals (default on)
+  sources: true                # per-host "top talkers" via MikroTik /ip accounting (default on)
   clients: true                # connected devices: DHCP leases + ARP + Wi-Fi (default on)
   speedtest_every: 3600        # internet speed test every N seconds (0 = only the dashboard button)
   speedtest: {bytes: 25000000} # size per run; override download/upload URLs if Cloudflare is blocked
@@ -179,6 +180,17 @@ VLAN, and whether it's wired or Wi-Fi), and an **internet speed test** with a
 "Run test" button plus scheduled runs. Bandwidth and byte counters come from
 MikroTik, Cisco, EdgeOS/VyOS and OpenWrt; the client list from MikroTik and
 Cisco (other vendors show reachability and uptime only).
+
+It also shows **traffic by source** — a "top talkers" table of which host is
+using bandwidth, how much down/up, and where it's coming from (its VLAN /
+interface and which router saw it). This uses MikroTik's `/ip accounting`, so
+enable it once on the router:
+
+```
+/ip accounting set enabled=yes threshold=20000
+```
+
+If accounting is off, the dashboard says so and shows that command.
 
 With `backup_every` set, the monitor also pulls each device's running config on
 a schedule, stores a snapshot, and compares it to the last one. When a config

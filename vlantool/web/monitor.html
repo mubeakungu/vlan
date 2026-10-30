@@ -79,6 +79,8 @@ section h2 .btn { float: right; }
   <div class="grid" id="cards"></div>
   <section id="clients" hidden><h2>Connected devices <span id="clientsCount" class="meta"></span></h2>
     <div class="tablewrap"><table id="clientsTable"></table></div></section>
+  <section id="talkers" hidden><h2>Traffic by source — top talkers <span id="talkersCount" class="meta"></span></h2>
+    <div id="talkersBody"></div></section>
   <section id="billing" hidden><h2>Hotspot &amp; subscribers <span id="billingCount" class="meta"></span></h2>
     <div id="billingBody"></div></section>
   <section id="drift" hidden><h2>Config &amp; drift <span id="driftCount" class="meta"></span></h2>
@@ -224,6 +226,28 @@ async function refresh() {
         <td>${esc(x.host || "-")}</td><td>${esc(x.iface || "-")}</td>
         <td><span class="tag ${x.source === "wifi" ? "wifi" : ""}">${esc(x.source || "-")}</span>${x.signal ? " " + esc(x.signal) + "dBm" : ""}</td>
         <td>${esc(x.seen_by || "-")}</td></tr>`).join("") + `</tbody>`;
+  }
+
+  // traffic by source (top talkers)
+  const ts2 = r.traffic_sources || { talkers: [], accounting_off: false };
+  const tk = ts2.talkers || [];
+  document.getElementById("talkers").hidden = !tk.length && !ts2.accounting_off;
+  document.getElementById("talkersCount").textContent = tk.length ? `(${tk.length})` : "";
+  if (ts2.accounting_off && !tk.length) {
+    document.getElementById("talkersBody").innerHTML =
+      `<div class="empty">Per-host traffic needs IP accounting. On MikroTik enable it with ` +
+      `<code>/ip accounting set enabled=yes threshold=20000</code>, then it shows which host each flow is from.</div>`;
+  } else if (tk.length) {
+    document.getElementById("talkersBody").innerHTML =
+      `<div class="tablewrap"><table><thead><tr><th>Source host</th><th>IP</th><th>Where from</th><th>↓ Down</th><th>↑ Up</th><th>Total</th><th>Router</th></tr></thead><tbody>` +
+      tk.map((t) => `<tr>
+        <td>${esc(t.host || "(unknown)")}</td>
+        <td class="rate">${esc(t.ip || "-")}</td>
+        <td>${esc(t.iface || "-")}${t.source === "wifi" ? ` <span class="tag wifi">wifi</span>` : ""}</td>
+        <td class="rate">${bps(t.in_bps)}</td>
+        <td class="rate">${bps(t.out_bps)}</td>
+        <td class="rate">${bps((t.in_bps || 0) + (t.out_bps || 0))}</td>
+        <td>${esc(t.seen_by || "-")}</td></tr>`).join("") + `</tbody></table></div>`;
   }
 
   // hotspot & subscribers

@@ -57,6 +57,7 @@ class Status:
     history: list[tuple[float, float | None]] = field(default_factory=list)
     traffic: dict[str, dict] = field(default_factory=dict)   # iface -> {rx_bps, tx_bps, rx_bytes, tx_bytes}
     clients: list[dict] = field(default_factory=list)         # connected devices seen by this box
+    sources: list[dict] = field(default_factory=list)         # per-host traffic (top talkers) seen by this box
     sessions: dict[str, list] = field(default_factory=dict)   # {hotspot: [...], pppoe: [...]} live billing sessions
     collect_error: str | None = None
     config_backed_up: float | None = None    # last successful config backup
@@ -72,6 +73,7 @@ class Monitor:
         self.interval = float(cfg.get("interval", 30))
         self.stats_every = float(cfg.get("ssh_stats_every", 300))
         self.want_traffic = cfg.get("traffic", True)
+        self.want_sources = cfg.get("sources", True)   # per-host top talkers (needs /ip accounting)
         self.want_clients = cfg.get("clients", True)
         self.speedtest_every = float(cfg.get("speedtest_every", 0))
         self.speedtest_cfg = cfg.get("speedtest") or {}
@@ -100,6 +102,8 @@ class Monitor:
         self.wazuh = None
         self._last_stats: dict[str, float] = {}
         self._traffic_prev: dict[str, dict[str, tuple[int, int, float]]] = {}
+        self._sources_prev: dict[str, float] = {}   # last accounting-snapshot time per device
+        self._sources_lastlen: dict[str, int] = {}  # raw accounting rows seen last poll (0 => likely off)
         self._last_speedtest = 0.0
         self._speedtest_running = False
         self._stop = threading.Event()
@@ -160,6 +164,8 @@ class Monitor:
         want = ["stats"]
         if self.want_traffic and mon_opts.get("traffic", True):
             want.append("traffic")
+            if self.want_sources and mon_opts.get("sources", True):
+                want.append("sources")
         if self.want_clients and mon_opts.get("clients", True):
             want.append("clients")
         if d.options.get("billing"):
@@ -175,6 +181,12 @@ class Monitor:
         counters = data.get("traffic")
         if counters is not None:
             s.traffic = self._throughput(d.name, counters, now, mon_opts.get("interfaces"))
+        sources = data.get("sources")
+        if sources is not None:
+            s.sources = self._talkers(d.name, sources, now)
+            # remember whether the raw snapshot had any rows (after the timing round)
+            if d.name in self._sources_prev:
+                self._sources_lastlen[d.name] = len(sources)
         clients = data.get("clients")
         if clients is not None:
             s.clients = sorted(clients, key=lambda c: (c.get("ip") or "", c.get("mac") or ""))
@@ -203,6 +215,34 @@ class Monitor:
             prev[iface] = (rx, tx, now)
             out[iface] = entry
         return out
+
+    @staticmethod
+    def _is_private(ip: str) -> bool:
+        return (ip.startswith("10.") or ip.startswith("192.168.")
+                or ip.startswith("169.254.")
+                or any(ip.startswith(f"172.{n}.") for n in range(16, 32)))
+
+    def _talkers(self, name: str, sources: dict, now: float) -> list[dict]:
+        """Turn one accounting snapshot (bytes since last round) into per-host bit/s.
+
+        Only local hosts are kept — those are the sources traffic comes *from*.
+        The first round just establishes timing (the snapshot period is unknown).
+        """
+        prev = self._sources_prev.get(name)
+        self._sources_prev[name] = now
+        if not prev:
+            return []
+        dt = now - prev
+        if dt <= 0:
+            return []
+        rows = []
+        for ip, (inb, outb) in sources.items():
+            if not self._is_private(ip):
+                continue   # a public IP here is the internet end, not a local talker
+            rows.append({"ip": ip, "in_bps": round(inb * 8 / dt), "out_bps": round(outb * 8 / dt),
+                         "bytes": inb + outb})
+        rows.sort(key=lambda r: r["bytes"], reverse=True)
+        return rows
 
     # ------------------------------------------------------------ speedtest
     def run_speedtest(self) -> dict:
@@ -454,6 +494,22 @@ class Monitor:
                         row[k] = v
                 row["seen_by"] = d["device"]
         clients = sorted(merged.values(), key=lambda c: (c.get("source") != "wifi", c.get("ip") or "~", c.get("mac") or ""))
+        # top talkers: per-host traffic, labelled with where it comes from (host, VLAN/iface, router)
+        by_ip = {c["ip"]: c for c in clients if c.get("ip")}
+        talkers = []
+        for d in devices:
+            for row in d.get("sources") or []:
+                who = by_ip.get(row["ip"], {})
+                talkers.append({"ip": row["ip"], "in_bps": row["in_bps"], "out_bps": row["out_bps"],
+                                "host": who.get("host"), "mac": who.get("mac"),
+                                "iface": who.get("iface"), "source": who.get("source"),
+                                "seen_by": d["device"]})
+        talkers.sort(key=lambda t: t["in_bps"] + t["out_bps"], reverse=True)
+        # if every source-capable device keeps returning an empty snapshot, accounting is off
+        polled = self._sources_lastlen
+        traffic_sources = {"talkers": talkers[:25],
+                           "accounting_off": bool(polled) and not talkers
+                           and all(n == 0 for n in polled.values())}
         # live hotspot / PPPoE sessions across every billing router
         hotspot, pppoe = [], []
         for d in devices:
@@ -473,6 +529,7 @@ class Monitor:
         return {"interval": self.interval, "devices": devices, "counts": counts,
                 "endpoints": endpoints, "edr_error": self.edr_error,
                 "clients": clients, "clients_total": len(clients), "billing": billing, "drift": drift,
+                "traffic_sources": traffic_sources,
                 "trends": {"traffic": self.traffic_trend(), "billing": self.billing_trend(),
                            "speedtest": self.speedtest_history(60)},
                 "speedtest": self.latest_speedtest(), "speedtest_history": self.speedtest_history(),

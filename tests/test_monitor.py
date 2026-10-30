@@ -249,3 +249,47 @@ def test_up_command_pushes_then_serves(monkeypatch, tmp_path):
     cli.cmd_up(args)
     assert pushed == ["hap"]
     assert served["monitor"] is True and served["backup_default"] == 300
+
+
+# ---- traffic by source (top talkers) ---------------------------------------
+def test_mt_sources_parser_sums_both_directions():
+    text = ("0 src-address=192.168.88.5 dst-address=1.1.1.1 packets=3 bytes=600\n"
+            "1 src-address=1.1.1.1 dst-address=192.168.88.5 packets=4 bytes=9000\n")
+    out = checks._mt_sources(text)
+    assert out["192.168.88.5"] == (9000, 600)   # (in=received, out=sent)
+    assert out["1.1.1.1"] == (600, 9000)
+
+
+def test_talkers_keeps_local_hosts_and_rates(monkeypatch, tmp_path):
+    data = {"vlans": [{"id": 10, "name": "USERS", "gateway": "192.168.88.1/24"}],
+            "monitoring": {"ssh_stats_every": 0.001, "interval": 1},
+            "devices": [{"name": "hap", "vendor": "mikrotik_routeros", "host": "127.0.0.1",
+                         "username": "admin", "routing": "all"}]}
+    m = Monitor(model.from_dict(data), tmp_path / "m.db")
+    snaps = iter([
+        {"sources": {"192.168.88.9": (4000, 1000), "8.8.8.8": (1000, 4000)}},
+        {"sources": {"192.168.88.9": (4000, 1000), "8.8.8.8": (1000, 4000)}},
+    ])
+    monkeypatch.setattr(checks, "ssh_collect", lambda d, want=(), timeout=15: next(snaps))
+    m.status["hap"].clients = [{"ip": "192.168.88.9", "mac": "AA", "host": "nas", "iface": "br", "source": "dhcp"}]
+    m._last_stats["hap"] = 0; m.run_once()
+    import time as _t; _t.sleep(0.05)
+    m._last_stats["hap"] = 0; m.run_once()
+    ts = m.snapshot()["traffic_sources"]
+    ips = [t["ip"] for t in ts["talkers"]]
+    assert "192.168.88.9" in ips and "8.8.8.8" not in ips   # public IP dropped
+    top = ts["talkers"][0]
+    assert top["host"] == "nas" and top["in_bps"] > 0 and top["seen_by"] == "hap"
+    assert ts["accounting_off"] is False
+
+
+def test_talkers_flags_accounting_off(monkeypatch, tmp_path):
+    data = {"vlans": [{"id": 10, "name": "USERS", "gateway": "192.168.88.1/24"}],
+            "monitoring": {"ssh_stats_every": 0.001, "interval": 1},
+            "devices": [{"name": "hap", "vendor": "mikrotik_routeros", "host": "127.0.0.1",
+                         "username": "admin", "routing": "all"}]}
+    m = Monitor(model.from_dict(data), tmp_path / "m.db")
+    monkeypatch.setattr(checks, "ssh_collect", lambda d, want=(), timeout=15: {"sources": {}})
+    m._last_stats["hap"] = 0; m.run_once()
+    m._last_stats["hap"] = 0; m.run_once()
+    assert m.snapshot()["traffic_sources"]["accounting_off"] is True

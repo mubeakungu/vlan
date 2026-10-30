@@ -256,6 +256,34 @@ CLIENTS = {
 }
 
 
+# --------------------------------------------- traffic by source (top talkers)
+# Per-host traffic, so the dashboard can show WHERE traffic is coming from.
+# MikroTik: /ip accounting records bytes per src/dst IP pair. We take a fresh
+# snapshot each round, so the bytes are the traffic since the last round.
+
+def _mt_sources(text: str) -> dict:
+    """Sum accounting bytes per host: out = bytes it sent, in = bytes it received."""
+    out: dict[str, list] = {}
+    for line in text.splitlines():
+        b = _kv(line, "bytes")
+        if not b or not b.isdigit():
+            continue
+        nbytes = int(b)
+        src, dst = _kv(line, "src-address"), _kv(line, "dst-address")
+        if src:
+            out.setdefault(src, [0, 0])[1] += nbytes   # this host sent -> upload/out
+        if dst:
+            out.setdefault(dst, [0, 0])[0] += nbytes   # this host received -> download/in
+    return {ip: (v[0], v[1]) for ip, v in out.items()}
+
+
+TRAFFIC_SOURCES = {
+    # take a fresh snapshot, then read it; empty output => accounting is disabled
+    "mikrotik_routeros": (["/ip accounting snapshot take",
+                           "/ip accounting snapshot print terse"], _mt_sources),
+}
+
+
 def ssh_collect(device, timeout: int = 15, want=("stats", "traffic", "clients", "sessions")) -> dict:
     """One Netmiko session: device stats, interface byte counters, and connected clients."""
     from netmiko import ConnectHandler
@@ -276,6 +304,8 @@ def ssh_collect(device, timeout: int = 15, want=("stats", "traffic", "clients", 
         plan.append(("stats", *STATS[plugin.key]))
     if "traffic" in want and plugin.key in IFACE_COUNTERS:
         plan.append(("traffic", *IFACE_COUNTERS[plugin.key]))
+    if "sources" in want and plugin.key in TRAFFIC_SOURCES:
+        plan.append(("sources", *TRAFFIC_SOURCES[plugin.key]))
     if "clients" in want and plugin.key in CLIENTS:
         plan.append(("clients", *CLIENTS[plugin.key]))
     if "sessions" in want and plugin.key in BILLING_SESSIONS:
