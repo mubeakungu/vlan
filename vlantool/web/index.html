@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VLAN Tool</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #fff; --text: #1d2330; --muted: #667085; --line: #dde1e8;
+  --accent: #2f6fde; --accent-text: #fff; --err: #b42318; --err-bg: #fef3f2; --warn: #9a6700; --warn-bg: #fff8e6;
+  --ok: #067647; --code: #f2f4f7;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #111418; --panel: #1a1e24; --text: #e6e8ec; --muted: #98a2b3; --line: #2c323b;
+    --accent: #5b8ff0; --err: #f97066; --err-bg: #2a1614; --warn: #f5c451; --warn-bg: #2a2310; --ok: #47cd89; --code: #14171c; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+header { display: flex; gap: 12px; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 2; flex-wrap: wrap; }
+header h1 { font-size: 16px; margin: 0; }
+header .file { color: var(--muted); font-size: 12px; flex: 1; min-width: 120px; overflow: hidden; text-overflow: ellipsis; }
+main { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 16px; padding: 16px; }
+@media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin-bottom: 16px; }
+h2 { font-size: 14px; margin: 0 0 10px; display: flex; justify-content: space-between; align-items: center; }
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; font-weight: 500; color: var(--muted); font-size: 12px; padding: 4px; }
+td { padding: 3px 4px; vertical-align: top; }
+input, select, textarea { width: 100%; padding: 5px 7px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); color: var(--text); font: inherit; }
+textarea { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+button { padding: 6px 11px; border: 1px solid var(--line); border-radius: 5px; background: var(--panel); color: var(--text); cursor: pointer; font: inherit; }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+button.x { padding: 3px 8px; color: var(--muted); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+.device { border: 1px solid var(--line); border-radius: 7px; padding: 10px; margin-bottom: 10px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-bottom: 8px; }
+label { font-size: 12px; color: var(--muted); display: block; }
+.hint { font-size: 12px; color: var(--muted); margin: 4px 0 0; }
+.msg { border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; font-size: 13px; }
+.msg.err { background: var(--err-bg); color: var(--err); }
+.msg.warn { background: var(--warn-bg); color: var(--warn); }
+.tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 8px; }
+.tabs button.on { border-color: var(--accent); color: var(--accent); }
+pre { background: var(--code); border: 1px solid var(--line); border-radius: 6px; padding: 10px; overflow: auto; max-height: 65vh; font-size: 12px; margin: 0; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.sub { color: var(--muted); font-size: 12px; }
+dialog { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); width: min(520px, calc(100vw - 32px)); }
+dialog::backdrop { background: rgba(0,0,0,.4); }
+.ok { color: var(--ok); } .bad { color: var(--err); }
+#yamlBox { min-height: 60vh; }
+</style>
+</head>
+<body>
+<header>
+  <h1>VLAN Tool</h1>
+  <span class="file" id="file"></span>
+  <button id="yamlBtn">Edit as YAML</button>
+  <button id="saveBtn" class="primary">Save</button>
+</header>
+<main>
+  <div id="editor">
+    <section>
+      <h2>VLANs <button id="addVlan">+ VLAN</button></h2>
+      <table>
+        <thead><tr><th style="width:70px">ID</th><th>Name</th><th>Gateway (optional)</th><th>DHCP relay</th><th></th></tr></thead>
+        <tbody id="vlans"></tbody>
+      </table>
+      <p class="hint">A gateway like 192.168.10.1/24 lets a device route the VLAN. Leave it empty for layer 2 only.</p>
+    </section>
+    <section>
+      <h2>Devices <button id="addDev">+ Device</button></h2>
+      <div id="devices"></div>
+    </section>
+  </div>
+  <div id="yamlPane" hidden>
+    <section>
+      <h2>network.yaml <button id="applyYaml" class="primary">Apply</button></h2>
+      <textarea id="yamlBox" spellcheck="false"></textarea>
+    </section>
+  </div>
+  <div>
+    <section>
+      <h2>Generated config</h2>
+      <div id="msgs"></div>
+      <div class="tabs" id="tabs"></div>
+      <div class="row" id="actions" hidden>
+        <span class="sub" id="vendorName"></span>
+        <span style="flex:1"></span>
+        <button id="copyBtn">Copy</button>
+        <button id="dlBtn">Download</button>
+        <button id="pushBtn" class="primary">Push over SSH</button>
+      </div>
+      <pre id="out">Add a device to see its config.</pre>
+    </section>
+  </div>
+</main>
+
+<dialog id="pushDlg">
+  <form method="dialog">
+    <h2>Push to <span id="pushName"></span></h2>
+    <p class="sub">The commands on the right are sent over SSH and the config is saved. Check them first.</p>
+    <div class="grid">
+      <div><label>Username</label><input id="pUser" autocomplete="username"></div>
+      <div><label>Password</label><input id="pPass" type="password" autocomplete="current-password"></div>
+      <div><label>Enable secret (optional)</label><input id="pSecret" type="password"></div>
+    </div>
+    <label style="display:flex;gap:6px;align-items:center;margin-bottom:10px"><input type="checkbox" id="pSave" checked style="width:auto"> Save config after pushing</label>
+    <pre id="pushOut" hidden></pre>
+    <div class="row" style="justify-content:flex-end;margin-top:10px">
+      <button value="cancel">Close</button>
+      <button id="pushGo" class="primary" value="default">Send now</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+let data = { vlans: [], devices: [] };
+let vendors = [];
+let configs = {};
+let current = null;
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  return r.json();
+}
+
+// ---- helpers that map the YAML shape to editable text --------------------
+const listText = (v) => v === undefined || v === null ? "" : Array.isArray(v) ? v.join(",") : String(v);
+function parseList(s) {
+  s = s.trim();
+  if (!s) return undefined;
+  if (s.toLowerCase() === "all") return "all";
+  const parts = s.split(",").map((x) => x.trim()).filter(Boolean).map((x) => /^\d+$/.test(x) ? Number(x) : x);
+  return parts.length === 1 ? parts[0] : parts;
+}
+function accessToText(a) { return Object.entries(a || {}).map(([p, v]) => `${p} = ${v}`).join("\n"); }
+function textToAccess(t) {
+  const out = {};
+  for (const line of t.split("\n")) {
+    const m = line.split("=");
+    if (m.length === 2 && m[0].trim()) out[m[0].trim()] = parseList(m[1]) ?? "";
+  }
+  return out;
+}
+function trunksToText(tr) {
+  return Object.entries(tr || {}).map(([p, t]) => {
+    t = t || {};
+    return `${p} = ${listText(t.allowed ?? "all")}` + (t.native !== undefined && t.native !== null ? ` native ${t.native}` : "");
+  }).join("\n");
+}
+function textToTrunks(text) {
+  const out = {};
+  for (const line of text.split("\n")) {
+    const [port, rest] = line.split("=");
+    if (!port || !port.trim() || rest === undefined) continue;
+    const m = rest.match(/^(.*?)(?:\s+native\s+(\S+))?\s*$/i);
+    const t = { allowed: parseList(m[1]) ?? "all" };
+    if (m[2]) t.native = /^\d+$/.test(m[2]) ? Number(m[2]) : m[2];
+    out[port.trim()] = t;
+  }
+  return out;
+}
+
+// ---- rendering -----------------------------------------------------------
+function renderVlans() {
+  $("vlans").innerHTML = data.vlans.map((v, i) => `
+    <tr>
+      <td><input type="number" min="1" max="4094" value="${esc(v.id)}" data-i="${i}" data-k="id"></td>
+      <td><input value="${esc(v.name)}" data-i="${i}" data-k="name"></td>
+      <td><input value="${esc(v.gateway)}" placeholder="none" data-i="${i}" data-k="gateway"></td>
+      <td><input value="${esc(listText(v.dhcp_relay))}" placeholder="none" data-i="${i}" data-k="dhcp_relay"></td>
+      <td><button class="x" data-del-vlan="${i}" title="Remove">✕</button></td>
+    </tr>`).join("");
+}
+
+function vendorInfo(key) { return vendors.find((v) => v.key === key) || {}; }
+
+function renderDevices() {
+  $("devices").innerHTML = data.devices.map((d, i) => {
+    const info = vendorInfo(d.vendor);
+    const opts = vendors.map((v) => `<option value="${v.key}" ${v.key === d.vendor ? "selected" : ""}>${esc(v.title)}</option>`).join("");
+    return `
+    <div class="device">
+      <div class="row"><strong style="flex:1">${esc(d.name || "new device")}</strong>
+        <button class="x" data-del-dev="${i}">Remove</button></div>
+      <div class="grid">
+        <div><label>Name</label><input value="${esc(d.name)}" data-d="${i}" data-k="name"></div>
+        <div><label>Vendor / OS</label><select data-d="${i}" data-k="vendor">${opts}</select></div>
+        <div><label>Management IP (for push)</label><input value="${esc(d.host)}" data-d="${i}" data-k="host"></div>
+        <div><label>SSH user</label><input value="${esc(d.username)}" data-d="${i}" data-k="username"></div>
+        <div><label>VLANs on device</label><input value="${esc(listText(d.vlans ?? "all"))}" data-d="${i}" data-k="vlans" data-list="1"></div>
+        <div><label>Route these VLANs</label><input value="${esc(listText(d.routing === true ? "all" : d.routing))}" placeholder="none" data-d="${i}" data-k="routing" data-list="1"></div>
+        <div><label>Parent interface ${info.needs_parent ? "(required)" : "(router-on-a-stick)"}</label><input value="${esc(d.parent_interface)}" placeholder="${info.needs_parent ? "e.g. port2 / igb1" : "none: use SVIs"}" data-d="${i}" data-k="parent_interface"></div>
+      </div>
+      <p class="hint" style="margin:0 0 8px">${esc(info.covers || "")}</p>
+      ${info.switching === false ? "" : `
+      <div class="grid">
+        <div><label>Access ports (port or range = VLAN)</label><textarea rows="4" data-d="${i}" data-k="access" placeholder="Gi1/0/1-12 = 10">${esc(accessToText(d.access))}</textarea></div>
+        <div><label>Trunk ports (port = allowed [native N])</label><textarea rows="4" data-d="${i}" data-k="trunks" placeholder="Gi1/0/48 = all native 99">${esc(trunksToText(d.trunks))}</textarea></div>
+      </div>`}
+      ${info.policies ? `
+      <div><label>Firewall policies (FROM -> TO action), one per line</label>
+        <textarea rows="2" data-d="${i}" data-k="policies" placeholder="GUEST -> USERS deny">${esc((d.policies || []).map((p) => `${p.from} -> ${p.to} ${p.action || "accept"}`).join("\n"))}</textarea></div>` : ""}
+    </div>`;
+  }).join("") || `<p class="sub">No devices yet.</p>`;
+}
+
+function renderOutput(result) {
+  configs = result.configs || {};
+  $("msgs").innerHTML = (result.errors || []).map((e) => `<div class="msg err">${esc(e)}</div>`).join("")
+    + (result.warnings || []).map((w) => `<div class="msg warn">${esc(w)}</div>`).join("");
+  const names = Object.keys(configs);
+  if (!names.includes(current)) current = names[0] || null;
+  $("tabs").innerHTML = names.map((n) => `<button class="${n === current ? "on" : ""}" data-tab="${esc(n)}">${esc(n)}</button>`).join("");
+  $("actions").hidden = !current;
+  if (current) {
+    const c = configs[current];
+    $("out").textContent = c.text;
+    $("vendorName").textContent = c.vendor;
+    $("pushBtn").disabled = !c.pushable;
+    $("pushBtn").title = c.pushable ? "" : "This device has no management IP, or its vendor cannot be pushed over SSH";
+  } else {
+    $("out").textContent = result.errors?.length ? "Fix the errors above to see config." : "Add a device to see its config.";
+  }
+}
+
+function renderAll() { renderVlans(); renderDevices(); regenerate(); }
+
+let timer;
+function regenerate() {
+  clearTimeout(timer);
+  timer = setTimeout(async () => renderOutput(await api("/api/generate", { data })), 250);
+}
+
+// ---- editing -------------------------------------------------------------
+function clean(obj) { for (const k of Object.keys(obj)) if (obj[k] === "" || obj[k] === undefined) delete obj[k]; return obj; }
+
+$("vlans").addEventListener("input", (e) => {
+  const { i, k } = e.target.dataset; if (i === undefined) return;
+  const v = data.vlans[i];
+  let val = e.target.value;
+  if (k === "id") val = Number(val);
+  if (k === "dhcp_relay") val = val.split(",").map((x) => x.trim()).filter(Boolean);
+  v[k] = Array.isArray(val) && !val.length ? undefined : val;
+  clean(v); regenerate();
+});
+
+$("devices").addEventListener("input", (e) => {
+  const { d, k, list } = e.target.dataset; if (d === undefined) return;
+  const dev = data.devices[d];
+  const val = e.target.value;
+  if (k === "access") dev.access = textToAccess(val);
+  else if (k === "trunks") dev.trunks = textToTrunks(val);
+  else if (k === "policies") dev.policies = val.split("\n").map((l) => l.match(/^\s*(\S+)\s*->\s*(\S+)\s*(\S+)?/)).filter(Boolean)
+      .map((m) => ({ from: /^\d+$/.test(m[1]) ? Number(m[1]) : m[1], to: /^\d+$/.test(m[2]) ? Number(m[2]) : m[2], action: m[3] || "accept" }));
+  else dev[k] = list ? parseList(val) : val;
+  clean(dev);
+  if (k === "vendor") renderDevices();
+  regenerate();
+});
+$("devices").addEventListener("change", (e) => { if (e.target.dataset.k === "name") renderDevices(); });
+
+document.addEventListener("click", (e) => {
+  const t = e.target;
+  if (t.dataset.delVlan !== undefined) { data.vlans.splice(t.dataset.delVlan, 1); renderAll(); }
+  if (t.dataset.delDev !== undefined) { data.devices.splice(t.dataset.delDev, 1); renderAll(); }
+  if (t.dataset.tab !== undefined) { current = t.dataset.tab; renderOutput({ configs, errors: [], warnings: [] }); regenerate(); }
+});
+
+$("addVlan").onclick = () => {
+  const next = Math.max(0, ...data.vlans.map((v) => v.id || 0)) + 10;
+  data.vlans.push({ id: next, name: `VLAN${next}` }); renderAll();
+};
+$("addDev").onclick = () => {
+  data.devices.push({ name: `switch${data.devices.length + 1}`, vendor: "cisco_ios", vlans: "all" }); renderAll();
+};
+
+$("yamlBtn").onclick = async () => {
+  const showing = !$("yamlPane").hidden;
+  if (showing) { $("yamlPane").hidden = true; $("editor").hidden = false; $("yamlBtn").textContent = "Edit as YAML"; return; }
+  $("yamlBox").value = (await api("/api/yaml", { data })).yaml;
+  $("yamlPane").hidden = false; $("editor").hidden = true; $("yamlBtn").textContent = "Back to form";
+};
+$("applyYaml").onclick = async () => {
+  const r = await api("/api/parse", { yaml: $("yamlBox").value });
+  if (r.error) { $("msgs").innerHTML = `<div class="msg err">${esc(r.error)}</div>`; return; }
+  data = { vlans: [], devices: [], ...r.data }; renderAll();
+};
+$("saveBtn").onclick = async () => {
+  if (!$("yamlPane").hidden) await $("applyYaml").onclick();
+  const r = await api("/api/save", { data });
+  $("saveBtn").textContent = "Saved"; setTimeout(() => ($("saveBtn").textContent = "Save"), 1500);
+  $("file").textContent = r.saved;
+};
+
+$("copyBtn").onclick = () => navigator.clipboard.writeText($("out").textContent);
+$("dlBtn").onclick = () => {
+  const a = document.createElement("a");
+  const ext = configs[current].vendor.startsWith("pfSense") ? "xml" : "txt";
+  a.href = URL.createObjectURL(new Blob([$("out").textContent], { type: "text/plain" }));
+  a.download = `${current}.${ext}`; a.click();
+};
+
+$("pushBtn").onclick = () => {
+  const dev = data.devices.find((d) => d.name === current);
+  $("pushName").textContent = current;
+  $("pUser").value = dev?.username || "";
+  $("pushOut").hidden = true;
+  $("pushDlg").showModal();
+};
+$("pushGo").onclick = async (e) => {
+  e.preventDefault();
+  $("pushGo").disabled = true; $("pushGo").textContent = "Sending...";
+  const r = await api("/api/push", { data, devices: [current], username: $("pUser").value,
+    password: $("pPass").value, secret: $("pSecret").value, save: $("pSave").checked });
+  $("pushGo").disabled = false; $("pushGo").textContent = "Send now";
+  $("pushOut").hidden = false;
+  $("pushOut").innerHTML = r.results.map((x) => `<span class="${x.ok ? "ok" : "bad"}">${esc(x.device)}: ${x.ok ? "OK" : "FAILED"}</span>\n${esc(x.output)}`).join("\n\n");
+};
+
+(async () => {
+  vendors = await api("/api/vendors");
+  const net = await api("/api/network");
+  $("file").textContent = net.file;
+  data = { vlans: [], devices: [], ...net.data };
+  renderAll();
+})();
+</script>
+</body>
+</html>

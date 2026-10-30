@@ -1,0 +1,137 @@
+"""Command line entry point: vlantool <command> ..."""
+from __future__ import annotations
+
+import argparse
+import getpass
+import sys
+from pathlib import Path
+
+from . import model
+from .push import plan, push_device
+from .validate import validate
+from .vendors import PLUGINS, get
+
+
+def _load_checked(path: str) -> model.Network:
+    try:
+        net = model.load(path)
+    except (OSError, model.ModelError, ValueError) as exc:
+        sys.exit(f"error: {exc}")
+    errors, warnings = validate(net)
+    for w in warnings:
+        print(f"warning: {w}", file=sys.stderr)
+    if errors:
+        for e in errors:
+            print(f"error: {e}", file=sys.stderr)
+        sys.exit(f"{len(errors)} error(s); nothing generated")
+    return net
+
+
+def _select(net: model.Network, names: list[str] | None) -> list[model.Device]:
+    if not names:
+        return net.devices
+    try:
+        return [net.device(n) for n in names]
+    except model.ModelError as exc:
+        sys.exit(f"error: {exc}")
+
+
+def cmd_vendors(args) -> None:
+    for p in PLUGINS:
+        push = "push" if p.pushable and p.netmiko_type else "file only"
+        print(f"{p.key:<22} {p.title}  [{push}]")
+        print(f"{'':<22} {p.covers}")
+
+
+def cmd_validate(args) -> None:
+    net = _load_checked(args.file)
+    print(f"OK: {len(net.vlans)} VLANs, {len(net.devices)} devices")
+
+
+def cmd_generate(args) -> None:
+    net = _load_checked(args.file)
+    out_dir = Path(args.out) if args.out else None
+    if out_dir:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    for dev in _select(net, args.device):
+        plugin = get(dev.vendor)(net, dev)
+        text = plugin.generate()
+        if out_dir:
+            ext = "xml" if plugin.key == "pfsense" else "txt"
+            path = out_dir / f"{dev.name}.{ext}"
+            path.write_text(text)
+            print(f"wrote {path}")
+        else:
+            print(text)
+
+
+def cmd_push(args) -> None:
+    net = _load_checked(args.file)
+    devices = _select(net, args.device)
+    for dev in devices:
+        print(f"===== {dev.name} ({get(dev.vendor).title}) -> {dev.host or 'no host'}")
+        print("\n".join(plan(net, dev)) or "(nothing to send)")
+    if args.dry_run:
+        print("\n(dry run: nothing was sent)")
+        return
+    if not args.yes:
+        answer = input(f"\nSend these commands to {len(devices)} device(s)? Type 'yes' to continue: ")
+        if answer.strip().lower() != "yes":
+            sys.exit("aborted")
+    password = args.password
+    if password is None and not __import__("os").environ.get("VLANTOOL_PASSWORD"):
+        password = getpass.getpass("SSH password: ")
+    failed = 0
+    for dev in devices:
+        r = push_device(net, dev, username=args.username, password=password,
+                        secret=args.secret, save=not args.no_save)
+        print(f"\n----- {r.device}: {'OK' if r.ok else 'FAILED'}\n{r.output}")
+        failed += not r.ok
+    if failed:
+        sys.exit(f"{failed} device(s) failed")
+
+
+def cmd_gui(args) -> None:
+    from .web.server import serve
+    serve(args.file, host=args.host, port=args.port)
+
+
+def main(argv: list[str] | None = None) -> None:
+    ap = argparse.ArgumentParser(prog="vlantool", description="Define VLANs once, configure any switch, router or firewall.")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("vendors", help="list supported vendors").set_defaults(func=cmd_vendors)
+
+    p = sub.add_parser("validate", help="check a network file")
+    p.add_argument("file")
+    p.set_defaults(func=cmd_validate)
+
+    p = sub.add_parser("generate", help="print or write config for each device")
+    p.add_argument("file")
+    p.add_argument("-d", "--device", action="append", help="only this device (repeatable)")
+    p.add_argument("-o", "--out", help="write one file per device into this folder")
+    p.set_defaults(func=cmd_generate)
+
+    p = sub.add_parser("push", help="send config to devices over SSH (needs netmiko)")
+    p.add_argument("file")
+    p.add_argument("-d", "--device", action="append", help="only this device (repeatable)")
+    p.add_argument("-u", "--username")
+    p.add_argument("-p", "--password", help="default: VLANTOOL_PASSWORD or prompt")
+    p.add_argument("--secret", help="enable secret (Cisco-style devices)")
+    p.add_argument("--dry-run", action="store_true", help="show what would be sent and stop")
+    p.add_argument("-y", "--yes", action="store_true", help="do not ask for confirmation")
+    p.add_argument("--no-save", action="store_true", help="do not save running config after pushing")
+    p.set_defaults(func=cmd_push)
+
+    p = sub.add_parser("gui", help="open the web editor")
+    p.add_argument("file", nargs="?", default="network.yaml")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8080)
+    p.set_defaults(func=cmd_gui)
+
+    args = ap.parse_args(argv)
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()
