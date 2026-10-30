@@ -55,6 +55,7 @@ class Status:
     history: list[tuple[float, float | None]] = field(default_factory=list)
     traffic: dict[str, dict] = field(default_factory=dict)   # iface -> {rx_bps, tx_bps, rx_bytes, tx_bytes}
     clients: list[dict] = field(default_factory=list)         # connected devices seen by this box
+    sessions: dict[str, list] = field(default_factory=dict)   # {hotspot: [...], pppoe: [...]} live billing sessions
     collect_error: str | None = None
 
 
@@ -148,6 +149,8 @@ class Monitor:
             want.append("traffic")
         if self.want_clients and mon_opts.get("clients", True):
             want.append("clients")
+        if d.options.get("billing"):
+            want.append("sessions")
         try:
             data = checks.ssh_collect(d, want=tuple(want))
         except Exception as exc:  # auth/connection failures must not stop monitoring
@@ -162,7 +165,10 @@ class Monitor:
         clients = data.get("clients")
         if clients is not None:
             s.clients = sorted(clients, key=lambda c: (c.get("ip") or "", c.get("mac") or ""))
-        s.collect_error = errs.get("traffic") or errs.get("clients")
+        sessions = data.get("sessions")
+        if sessions is not None:
+            s.sessions = sessions
+        s.collect_error = errs.get("traffic") or errs.get("clients") or errs.get("sessions")
 
     def _throughput(self, name: str, counters: dict, now: float, only=None) -> dict:
         """Turn cumulative rx/tx byte counters into per-interface bit/s since the last round."""
@@ -319,9 +325,17 @@ class Monitor:
                         row[k] = v
                 row["seen_by"] = d["device"]
         clients = sorted(merged.values(), key=lambda c: (c.get("source") != "wifi", c.get("ip") or "~", c.get("mac") or ""))
+        # live hotspot / PPPoE sessions across every billing router
+        hotspot, pppoe = [], []
+        for d in devices:
+            for row in (d.get("sessions") or {}).get("hotspot") or []:
+                hotspot.append({**row, "seen_by": d["device"]})
+            for row in (d.get("sessions") or {}).get("pppoe") or []:
+                pppoe.append({**row, "seen_by": d["device"]})
+        billing = {"hotspot": hotspot, "pppoe": pppoe, "online": len(hotspot) + len(pppoe)}
         return {"interval": self.interval, "devices": devices, "counts": counts,
                 "endpoints": endpoints, "edr_error": self.edr_error,
-                "clients": clients, "clients_total": len(clients),
+                "clients": clients, "clients_total": len(clients), "billing": billing,
                 "speedtest": self.latest_speedtest(), "speedtest_history": self.speedtest_history(),
                 "events": [{"ts": t, "device": dv, "state": st, "message": m} for t, dv, st, m in rows]}
 

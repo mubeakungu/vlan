@@ -256,7 +256,7 @@ CLIENTS = {
 }
 
 
-def ssh_collect(device, timeout: int = 15, want=("stats", "traffic", "clients")) -> dict:
+def ssh_collect(device, timeout: int = 15, want=("stats", "traffic", "clients", "sessions")) -> dict:
     """One Netmiko session: device stats, interface byte counters, and connected clients."""
     from netmiko import ConnectHandler
 
@@ -278,6 +278,8 @@ def ssh_collect(device, timeout: int = 15, want=("stats", "traffic", "clients"))
         plan.append(("traffic", *IFACE_COUNTERS[plugin.key]))
     if "clients" in want and plugin.key in CLIENTS:
         plan.append(("clients", *CLIENTS[plugin.key]))
+    if "sessions" in want and plugin.key in BILLING_SESSIONS:
+        plan.append(("sessions", *BILLING_SESSIONS[plugin.key]))
     if not plan:
         return {}
     out: dict = {}
@@ -289,3 +291,50 @@ def ssh_collect(device, timeout: int = 15, want=("stats", "traffic", "clients"))
             except Exception as exc:
                 out.setdefault("errors", {})[name] = str(exc).splitlines()[0][:160]
     return out
+
+
+# ------------------------------------------------ billing: active sessions
+# Who is online right now on the hotspot and the PPPoE server (MikroTik).
+
+def _dur_secs(s: str | None) -> int | None:
+    if not s:
+        return None
+    total, num = 0, ""
+    for ch in s:
+        if ch.isdigit():
+            num += ch
+        elif ch in "wdhms" and num:
+            total += int(num) * {"w": 604800, "d": 86400, "h": 3600, "m": 60, "s": 1}[ch]
+            num = ""
+    return total or None
+
+
+def _mt_sessions(text: str) -> dict:
+    out = {"hotspot": [], "pppoe": []}
+    section = None
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("### "):
+            section = s[4:]
+            continue
+        if section == "hs" and _kv(line, "user"):
+            out["hotspot"].append({
+                "user": _kv(line, "user"), "ip": _kv(line, "address"),
+                "mac": (_kv(line, "mac-address") or "").upper() or None,
+                "uptime": _kv(line, "uptime"),
+                "in_bytes": _int(_kv(line, "bytes-in")), "out_bytes": _int(_kv(line, "bytes-out"))})
+        elif section == "ppp" and _kv(line, "name"):
+            out["pppoe"].append({
+                "user": _kv(line, "name"), "ip": _kv(line, "address"),
+                "service": _kv(line, "service"), "uptime": _kv(line, "uptime")})
+    return out
+
+
+def _int(v: str | None) -> int | None:
+    return int(v) if v and v.isdigit() else None
+
+
+BILLING_SESSIONS = {
+    "mikrotik_routeros": ([':put "### hs"', "/ip hotspot active print terse",
+                           ':put "### ppp"', "/ppp active print terse"], _mt_sessions),
+}

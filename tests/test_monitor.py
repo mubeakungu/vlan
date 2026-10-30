@@ -128,3 +128,34 @@ def test_speedtest_measures_down_and_up():
 def test_speedtest_handles_failure():
     r = speedtest.run({"download": "http://127.0.0.1:1/x", "upload": "", "timeout": 1})
     assert r["ok"] is False and r["error"]
+
+
+def test_mikrotik_session_parser():
+    text = ('### hs\n'
+            '0 server=vt-hotspot user=VVJRHG8P address=192.168.20.15 mac-address=08:00:27:AA:BB:01 '
+            'uptime=12m34s bytes-in=12400000 bytes-out=98700000\n'
+            '### ppp\n'
+            '0 name=sub001 service=pppoe address=10.80.0.10 uptime=1h2m3s\n')
+    out = checks._mt_sessions(text)
+    assert out["hotspot"][0]["user"] == "VVJRHG8P" and out["hotspot"][0]["out_bytes"] == 98700000
+    assert out["pppoe"][0]["user"] == "sub001" and out["pppoe"][0]["service"] == "pppoe"
+    assert checks._dur_secs("1h2m3s") == 3723
+
+
+def test_engine_aggregates_hotspot_sessions(monkeypatch, tmp_path):
+    def fake(d, want=(), timeout=15):
+        assert "sessions" in want           # billing device asks for sessions
+        return {"stats": {}, "sessions": {"hotspot": [{"user": "CODE1", "ip": "192.168.20.9", "uptime": "5m",
+                                                        "in_bytes": 1000, "out_bytes": 2000}],
+                                          "pppoe": [{"user": "sub001", "ip": "10.80.0.5", "service": "pppoe", "uptime": "1h"}]}}
+    monkeypatch.setattr(checks, "ssh_collect", fake)
+    data = {"vlans": [{"id": 20, "name": "GUEST", "gateway": "192.168.20.1/24"}],
+            "monitoring": {"ssh_stats_every": 0.01},
+            "devices": [{"name": "hap", "vendor": "mikrotik_routeros", "host": "127.0.0.1", "username": "admin",
+                         "routing": "all",
+                         "billing": {"hotspot": {"interface": "GUEST", "plans": [{"name": "1h"}],
+                                                 "vouchers": [{"plan": "1h", "count": 1}]}}}]}
+    m = Monitor(model.from_dict(data), tmp_path / "m.db")
+    m.check_device(m.net.devices[0])
+    b = m.snapshot()["billing"]
+    assert b["online"] == 2 and b["hotspot"][0]["seen_by"] == "hap" and b["pppoe"][0]["user"] == "sub001"

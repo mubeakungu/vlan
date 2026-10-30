@@ -69,6 +69,8 @@ section h2 .btn { float: right; }
   <div class="grid" id="cards"></div>
   <section id="clients" hidden><h2>Connected devices <span id="clientsCount" class="meta"></span></h2>
     <div class="tablewrap"><table id="clientsTable"></table></div></section>
+  <section id="billing" hidden><h2>Hotspot &amp; subscribers <span id="billingCount" class="meta"></span></h2>
+    <div id="billingBody"></div></section>
   <section id="edr" hidden><h2>Endpoints (EDR agents)</h2><div id="edrBody"></div></section>
   <section><h2>Recent alerts</h2><div id="events" class="empty">No alerts yet.</div></section>
 </main>
@@ -111,6 +113,7 @@ async function refresh() {
     ["Clients", r.clients_total ?? 0],
     ["Traffic ↓ / ↑", `${bps(wanRx)} / ${bps(wanTx)}`],
     ["Internet ↓", st && st.down_mbps !== null ? `${st.down_mbps} Mbps` : "—"],
+    ...(r.billing && (r.billing.hotspot.length || r.billing.pppoe.length) ? [["Hotspot online", r.billing.online]] : []),
   ].map(([l, n]) => `<div class="tile"><div class="n" style="font-size:${String(n).length > 8 ? 17 : 26}px">${esc(n)}</div><div class="l">${l}</div></div>`).join("");
 
   const order = { down: 0, degraded: 1, unknown: 2, up: 3, "no-host": 4 };
@@ -161,6 +164,27 @@ async function refresh() {
         <td>${esc(x.host || "-")}</td><td>${esc(x.iface || "-")}</td>
         <td><span class="tag ${x.source === "wifi" ? "wifi" : ""}">${esc(x.source || "-")}</span>${x.signal ? " " + esc(x.signal) + "dBm" : ""}</td>
         <td>${esc(x.seen_by || "-")}</td></tr>`).join("") + `</tbody>`;
+  }
+
+  // hotspot & subscribers
+  const bl = r.billing || { hotspot: [], pppoe: [] };
+  const hasBilling = bl.hotspot.length || bl.pppoe.length;
+  document.getElementById("billing").hidden = !hasBilling;
+  document.getElementById("billingCount").textContent = hasBilling ? `(${bl.online} online)` : "";
+  if (hasBilling) {
+    let html = "";
+    if (bl.hotspot.length) {
+      html += `<div class="tablewrap"><table><thead><tr><th>Hotspot user</th><th>IP</th><th>MAC</th><th>Uptime</th><th>Down</th><th>Up</th><th>Router</th></tr></thead><tbody>` +
+        bl.hotspot.map((u) => `<tr><td class="rate">${esc(u.user)}</td><td class="rate">${esc(u.ip || "-")}</td>
+          <td class="rate">${esc(u.mac || "-")}</td><td>${esc(u.uptime || "-")}</td>
+          <td class="rate">${bytes(u.in_bytes)}</td><td class="rate">${bytes(u.out_bytes)}</td><td>${esc(u.seen_by || "-")}</td></tr>`).join("") + `</tbody></table></div>`;
+    }
+    if (bl.pppoe.length) {
+      html += `<h2 style="margin-top:12px">PPPoE subscribers online</h2><div class="tablewrap"><table><thead><tr><th>User</th><th>IP</th><th>Service</th><th>Uptime</th><th>Router</th></tr></thead><tbody>` +
+        bl.pppoe.map((u) => `<tr><td class="rate">${esc(u.user)}</td><td class="rate">${esc(u.ip || "-")}</td>
+          <td>${esc(u.service || "-")}</td><td>${esc(u.uptime || "-")}</td><td>${esc(u.seen_by || "-")}</td></tr>`).join("") + `</tbody></table></div>`;
+    }
+    document.getElementById("billingBody").innerHTML = html;
   }
 
   const eps = r.endpoints || [];
