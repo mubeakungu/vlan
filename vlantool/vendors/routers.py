@@ -54,12 +54,15 @@ class MikroTik(Vendor):
                     line += f" untagged={','.join(untagged)}"
                 out.append(line + f' comment="{v.name}"')
         dhcp_ids = set(model.parse_vlan_list(self.dev.options.get("dhcp_server"), self.net.vlans))
-        dhcp_ids |= set(model.parse_vlan_list((self.dev.options.get("router") or {}).get("dhcp_server"), self.net.vlans))
+        router = self.dev.options.get("router") or {}
+        dhcp_ids |= set(model.parse_vlan_list(router.get("dhcp_server"), self.net.vlans))
+        dmz_ids = set(model.parse_vlan_list(router.get("dmz"), self.net.vlans))
         for v in self.routed:
             name = self.l3_name(v)
             out += [f"/interface vlan add interface={l3_parent} name={name} vlan-id={v.id}",
                     f"/ip address add address={v.ip}/{v.prefixlen} interface={name}"]
-            if self.dev.options.get("lan_list", True):
+            # a DMZ VLAN stays out of the trusted LAN list so it cannot reach the router itself
+            if self.dev.options.get("lan_list", True) and v.id not in dmz_ids:
                 # default hAP/hEX firewall only trusts the LAN interface list
                 out.append(f"/interface list member add list=LAN interface={name}")
             if v.id in dhcp_ids:

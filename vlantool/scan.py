@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from html import escape
 
-from .model import Network
+from .model import Network, parse_vlan_list
 from .services import filtering, vpn
 from .services.security import cfg as sec_cfg
 from .vendors import get
@@ -121,8 +121,18 @@ def audit_config(net: Network, report: ScanReport) -> None:
         wg = v.get("wireguard")
         if wg and wg.get("full_tunnel") is False and not net.security:
             pass
+        # DMZ hygiene: a VLAN that looks like a DMZ but isn't walled off from the LAN
+        if router:
+            walled = set(parse_vlan_list(router.get("dmz"), net.vlans)) | set(parse_vlan_list(router.get("isolate"), net.vlans))
+            for v in net.vlans_for(d):
+                if "dmz" in v.name.lower() or v.name.lower() in ("servers", "public"):
+                    if v.id not in walled:
+                        report.add("high", name, f"DMZ VLAN '{v.name}' can reach the LAN",
+                                   f"VLAN {v.id} looks like a DMZ but is not under router.dmz or router.isolate, "
+                                   "so a compromised server there can attack your internal network.",
+                                   f"Add {v.name} to router.dmz so it is blocked from the LAN.")
         # management exposure: router with no isolate and a guest VLAN
-        if router and not router.get("isolate") and any(x.name.lower() in ("guest", "guests") for x in net.vlans_for(d)):
+        if router and not router.get("isolate") and not router.get("dmz") and any(x.name.lower() in ("guest", "guests") for x in net.vlans_for(d)):
             report.add("medium", name, "Guest VLAN not isolated",
                        "A GUEST VLAN exists but router.isolate does not list it, so guests can reach your LAN.",
                        "Add the guest VLAN to router.isolate.")

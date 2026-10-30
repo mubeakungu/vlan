@@ -7,7 +7,7 @@ device, whatever the brand. Then watch it all from one monitoring dashboard.
 | Module | What it does |
 |---|---|
 | VLANs | access/trunk ports, SVIs, router-on-a-stick, DHCP relay (24 platforms) |
-| Router | WAN (DHCP/static/PPPoE), NAT, DNS, DHCP servers, firewall, guest isolation, port forwards, static routes, NTP |
+| Router | WAN (DHCP/static/PPPoE), NAT, DNS, DHCP servers, firewall, guest isolation, DMZ, port forwards, static routes, NTP |
 | Links | point-to-point links between devices, wired or wireless, static or OSPF routing |
 | VPN | WireGuard server with ready-to-import phone/laptop files; IPsec IKEv2 site-to-site |
 | Wireless | SSIDs mapped to VLANs, extender/repeater mode, mesh |
@@ -207,6 +207,33 @@ vlantool edr network.yaml -o out/
 
 With `security.wazuh.api` set, `vlantool monitor` shows every endpoint's agent
 (active, disconnected, not enrolled) and alerts when one drops off.
+
+## DMZ (public-facing servers)
+
+Put servers that must be reachable from the internet on their own VLAN and mark
+it a DMZ. It can reach the internet and be reached from the WAN through your
+port-forwards, but it is blocked from the rest of your LAN, so a compromised
+server there can't pivot into your internal network.
+
+```yaml
+vlans:
+  - {id: 70, name: DMZ, gateway: 192.168.70.1/24}
+
+devices:
+  - name: edge
+    vendor: mikrotik_routeros
+    routing: all
+    router:
+      wan: {interface: ether1, mode: dhcp}
+      dmz: [DMZ]                 # one or more VLANs
+      dhcp_server: [DMZ]
+      port_forwards:
+        - {name: web, proto: tcp, port: 443, to: 192.168.70.10}
+```
+
+Generated for MikroTik, Cisco, EdgeRouter, VyOS, FortiGate and OpenWrt (others
+get manual steps). The scanner warns if a VLAN named like a DMZ isn't actually
+walled off.
 
 ## Content filtering by device
 

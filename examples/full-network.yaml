@@ -32,6 +32,7 @@ vlans:
   - {id: 99, name: MGMT,    gateway: 192.168.99.1/24}
   - {id: 50, name: BRANCH,  gateway: 192.168.50.1/24}
   - {id: 60, name: OFFICE2, gateway: 10.60.0.1/24}
+  - {id: 70, name: DMZ,     gateway: 192.168.70.1/24}   # public-facing servers
 
 devices:
   # Edge router: internet, NAT, DHCP, firewall, VPN, and the AP radios
@@ -41,10 +42,11 @@ devices:
     username: admin
     bridge: bridge
     create_bridge: false
-    vlans: [10, 20, 30, 99]
-    routing: [10, 20, 30, 99]
+    vlans: [10, 20, 30, 70, 99]
+    routing: [10, 20, 30, 70, 99]
     access:
       ether4: USERS
+      ether2: DMZ
     trunks:
       ether5: {allowed: [10, 20, 30, 99], native: 99}   # to the office switch
     router:
@@ -53,8 +55,10 @@ devices:
       dns: [1.1.1.1, 8.8.8.8]
       dhcp_server: all
       isolate: [GUEST, CAMERAS]
+      dmz: [DMZ]                       # servers here face the internet but can't touch the LAN
       port_forwards:
-        - {name: nvr, proto: tcp, port: 8443, to: 192.168.30.10, to_port: 443}
+        - {name: web,  proto: tcp, port: 443, to: 192.168.70.10}   # public web server in the DMZ
+        - {name: nvr,  proto: tcp, port: 8443, to: 192.168.30.10, to_port: 443}
       ntp: [pool.ntp.org]
     vpn:
       wireguard:

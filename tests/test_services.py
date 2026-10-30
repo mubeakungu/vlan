@@ -166,3 +166,44 @@ def test_link_validation():
                        "b": {"device": "ghost", "interface": "eth1", "address": "10.0.1.2/30"}}]}
     errors, _ = validate(model.from_dict(data))
     assert any("ghost" in e for e in errors) and any("same subnet" in e for e in errors)
+
+
+@pytest.mark.parametrize("vendor,extra", [
+    ("mikrotik_routeros", {"routing": "all"}),
+    ("cisco_ios", {"parent_interface": "Gi0/1", "routing": "all"}),
+    ("vyos", {"parent_interface": "eth1", "routing": "all"}),
+    ("fortinet", {"parent_interface": "port2", "routing": "all"}),
+    ("openwrt", {"parent_interface": "eth0", "routing": "all"}),
+])
+def test_dmz_isolated_and_reachable(vendor, extra):
+    dev = {"name": "edge", "vendor": vendor,
+           "router": {"wan": {"interface": "wan0", "mode": "dhcp"}, "dmz": ["DMZ"], "dhcp_server": "all",
+                      "port_forwards": [{"name": "web", "proto": "tcp", "port": 443, "to": "192.168.70.10"}]}}
+    dev.update(extra)
+    net = model.from_dict({"vlans": [{"id": 10, "name": "USERS", "gateway": "192.168.10.1/24"},
+                                     {"id": 70, "name": "DMZ", "gateway": "192.168.70.1/24"}], "devices": [dev]})
+    assert validate(net)[0] == []
+    text = get(vendor)(net, net.devices[0]).generate()
+    assert "DMZ" in text and "192.168.70.10" in text          # the VLAN and its port-forward exist
+    # DMZ is blocked from the LAN: either an explicit private-range drop (rule-based vendors)
+    # or policy-based default-deny (FortiGate, which also gets a LAN->DMZ admin policy).
+    if vendor == "mikrotik_routeros":
+        assert "in-interface=vlan70-DMZ dst-address=192.168.0.0/16" in text
+        assert "list=LAN interface=vlan70-DMZ" not in text    # DMZ kept out of the trusted list
+    elif vendor == "fortinet":
+        assert '"USERS-to-DMZ"' in text                       # LAN can still manage the DMZ
+    elif vendor == "openwrt":
+        assert "firewall.zone_vlan70" in text or "REJECT" in text
+
+
+def test_dmz_scanner_flags_unisolated_dmz():
+    from vlantool.scan import run_scan
+    data = {"vlans": [{"id": 70, "name": "DMZ", "gateway": "192.168.70.1/24"}],
+            "devices": [{"name": "edge", "vendor": "mikrotik_routeros", "routing": "all",
+                         "router": {"wan": {"interface": "e1", "mode": "dhcp"}}}]}  # DMZ not listed under dmz/isolate
+    rep = run_scan(model.from_dict(data), ports=False)
+    assert any("can reach the LAN" in f.title for f in rep.findings)
+    # once declared as a DMZ, the finding goes away
+    data["devices"][0]["router"]["dmz"] = ["DMZ"]
+    rep2 = run_scan(model.from_dict(data), ports=False)
+    assert not any("can reach the LAN" in f.title for f in rep2.findings)

@@ -40,6 +40,14 @@ def cfg(plugin) -> dict | None:
     c["ntp"] = as_list(c.get("ntp"))
     c["dhcp_ids"] = [v for v in parse_vlan_list(c.get("dhcp_server"), plugin.net.vlans) if v in plugin.dev.routed_vlans]
     c["isolate_ids"] = [v for v in parse_vlan_list(c.get("isolate"), plugin.net.vlans) if v in plugin.dev.routed_vlans]
+    # A DMZ VLAN is isolated from the LAN exactly like an isolated VLAN, but it also
+    # hosts services reachable from the WAN (via port_forwards). So it reuses the
+    # tested "block traffic to private networks" rules, and we track it separately
+    # for labelling and the scanner.
+    c["dmz_ids"] = [v for v in parse_vlan_list(c.get("dmz"), plugin.net.vlans) if v in plugin.dev.routed_vlans]
+    for vid in c["dmz_ids"]:
+        if vid not in c["isolate_ids"]:
+            c["isolate_ids"].append(vid)
     c["port_forwards"] = as_list(c.get("port_forwards"))
     c["static_routes"] = as_list(c.get("static_routes"))
     return c
@@ -99,6 +107,13 @@ def mikrotik(p, c) -> list[str]:
         for chain, rule, name in rules:
             out.append(mt_once(f'/ip firewall filter find comment="vlantool: {name}"',
                                f'/ip firewall filter add chain={chain} {rule} comment="vlantool: {name}"'))
+    # DMZ interfaces are kept out of the LAN list (see the vendor render), so the router
+    # would also block their DHCP/DNS/ping. Allow just those to the router, nothing else.
+    for vid in c["dmz_ids"]:
+        v = p.vlan(vid)
+        out.append(mt_once(f'/ip firewall filter find comment="vlantool: dmz svc {v.name}"',
+                           f'/ip firewall filter add chain=input in-interface={p.l3_name(v)} protocol=udp '
+                           f'dst-port=53,67 action=accept comment="vlantool: dmz svc {v.name}" place-before=0'))
     for vid in c["isolate_ids"]:
         v = p.vlan(vid)
         for net in PRIVATE:
@@ -406,6 +421,20 @@ def fortinet(p, c) -> list[str]:
         out += ["    end", "end"]
     if c["isolate_ids"]:
         out.append(p.note("isolation: FortiGate blocks VLAN-to-VLAN traffic unless a policy allows it, so isolated VLANs need nothing extra"))
+    if c["dmz_ids"]:
+        # FortiGate denies inter-VLAN by default, so DMZ is already walled off from the LAN.
+        # Add LAN -> DMZ allow policies so you can still administer the servers from inside.
+        lan = [v for v in p.routed if v.id not in c["dmz_ids"]]
+        if lan:
+            out.append("config firewall policy")
+            for d in c["dmz_ids"]:
+                dz = p.l3_name(p.vlan(d))
+                for v in lan:
+                    out += ["    edit 0", f'        set name "{(p.l3_name(v) + "-to-" + dz)[:35]}"',
+                            f'        set srcintf "{p.l3_name(v)}"', f'        set dstintf "{dz}"',
+                            '        set srcaddr "all"', '        set dstaddr "all"', "        set action accept",
+                            '        set schedule "always"', '        set service "ALL"', "    next"]
+            out.append("end")
     return [line for item in out for line in item.split("\n")]
 
 
@@ -430,7 +459,13 @@ def render(plugin) -> list[str]:
         return []
     handler = HANDLERS.get(plugin.key)
     if handler:
-        return handler(plugin, c)
+        lines = handler(plugin, c)
+        if c["dmz_ids"]:
+            names = ", ".join(f"{plugin.vlan(v).id} {plugin.vlan(v).name}" for v in c["dmz_ids"])
+            note = plugin.note(f"DMZ: VLAN(s) {names} can reach the internet and be reached from the WAN "
+                               "via port_forwards, but are blocked from the rest of the LAN.")
+            lines = [lines[0], note] + lines[1:] if lines else [note]
+        return lines
     wan = c["wan"]
     steps = []
     if wan.get("interface"):
@@ -473,7 +508,7 @@ def validate(net, device) -> tuple[list[str], list[str]]:
     for r in as_list(raw.get("static_routes")):
         if not all(k in r for k in ("to", "via")):
             errors.append(f"{where}: static route needs 'to' and 'via': {r}")
-    for key in ("dhcp_server", "isolate"):
+    for key in ("dhcp_server", "isolate", "dmz"):
         if raw.get(key) is True or str(raw.get(key)).lower() == "all":
             continue
         try:
