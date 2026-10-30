@@ -2,3 +2,6 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 out/
+*.secrets.json
+*.monitor.db
+vlantool-monitor.db
