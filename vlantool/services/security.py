@@ -84,6 +84,11 @@ def syslog_lines(p, ip: str, port: int) -> list[str]:
         return [f"logging host {ip} ipv4 {port} info"]
     if k == "extreme_exos":
         return [f"configure syslog add {ip}:{port} vr VR-Default local0", "enable syslog"]
+    if k == "sophos":
+        return manual(p, "Log forwarding", [
+            "Configure > System services > Log settings > Add (syslog server):",
+            "  name vlantool-siem, IP server {ip}, port {port}, facility DAEMON, format Device standard".format(ip=ip, port=port),
+            "  tick the log categories to forward (Firewall, IPS, Authentication, System, Web filter), then Apply"])
     return manual(p, "Log forwarding", [f"Send syslog (UDP {port}, level info) to {ip}"])
 
 
@@ -163,6 +168,10 @@ IPS_STEPS = {
              "(set interfaces ethernet eth0 mirror ingress ethX) and run Suricata there"],
     "ubiquiti_edgeos": ["EdgeOS has no IPS (UniFi gateways do: Settings > Security > Intrusion Prevention)",
                         "Or mirror the WAN port to a Suricata sensor"],
+    "sophos": ["Protect > Intrusion prevention > IPS policies: use 'LAN TO WAN' (or clone it to a custom policy)",
+               "Set each signature category action to 'Drop packet' to prevent, or 'Allow packet' + log to only detect",
+               "Rules and policies > Firewall rules: on the LAN-to-WAN rule, under 'Intrusion prevention' attach that IPS policy",
+               "Keep IPS signatures current under Administration > Backup & firmware / Pattern updates"],
 }
 
 

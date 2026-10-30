@@ -20,7 +20,7 @@ device, whatever the brand. Then watch it all from one monitoring dashboard.
 See `examples/full-network.yaml` for every feature in one file.
 
 ```
-network.yaml  ──►  vlantool  ──►  Cisco / Juniper / Aruba / D-Link / TP-Link / MikroTik / FortiGate / ... config
+network.yaml  ──►  vlantool  ──►  Cisco / Juniper / Aruba / MikroTik / FortiGate / Sophos / ... config
                               └─►  SSH push (Netmiko)  └─►  web editor
 ```
 
@@ -70,7 +70,7 @@ devices:
     vendor: fortinet
     parent_interface: port2
     routing: [30, 40]
-    policies:                   # firewall vendors only (FortiGate, Juniper SRX, pfSense)
+    policies:                   # firewall vendors only (FortiGate, Juniper SRX, pfSense, Sophos)
       - {from: GUEST, to: CAMERAS, action: deny}
 ```
 
@@ -129,6 +129,7 @@ Generated config per module:
 | EdgeRouter | yes | yes (+OSPF) | yes | yes | n/a |
 | VyOS | yes | yes (+OSPF) | yes | yes | n/a |
 | FortiGate | yes | yes | n/a | yes | steps |
+| Sophos Firewall (SFOS) | steps (Web Admin) | steps | steps | steps | steps |
 | Juniper | steps | yes (+OSPF) | steps | steps | n/a |
 | Everything else (UniFi, Omada, airMAX, TP-Link...) | numbered manual steps in the output |
 
@@ -190,6 +191,7 @@ devices:
 | FortiGate | IPS sensor (medium/high/critical) attached to every firewall policy |
 | OpenWrt | Snort 3 inline (prevent) or passive (detect) |
 | MikroTik | no signature IPS in RouterOS: brute-force and port-scan banning, plus `sensor:` to stream WAN traffic to a Suricata box |
+| Sophos Firewall (SFOS) | steps: IPS policy with drop (prevent) / log (detect), attached to the firewall rule |
 | pfSense/OPNsense, Cisco, Juniper SRX, VyOS, EdgeOS | numbered steps (Suricata, UTD Snort, IDP) |
 
 Syslog forwarding is generated for every vendor with a CLI.
@@ -255,8 +257,9 @@ devices:
 
 The device is pinned to a static IP by its MAC, and traffic from it to those
 domains is dropped. Generated for **MikroTik** (layer7 on the TLS hostname),
-**FortiGate** (web filter with a MAC address object) and **OpenWrt** (dnsmasq
-nftset); other vendors get manual steps. For airtight HTTPS filtering, also
+**FortiGate** (web filter with a MAC address object), **OpenWrt** (dnsmasq
+nftset) and **Sophos Firewall** (URL group + web policy per MAC/IP host); other
+vendors get manual steps. For airtight HTTPS filtering, also
 point those clients at a filtering DNS resolver.
 
 ## Managing the live network
@@ -340,6 +343,7 @@ Run it from a PC plugged into ether2 or ether3. Undo with
 | `vyos` | VyOS | yes (commit) |
 | `fortinet` | FortiGate | yes |
 | `pfsense` | pfSense / OPNsense config.xml sections | file only |
+| `sophos` | Sophos XG/XGS Firewall (SFOS v18-v21) | Web Admin / XML API steps |
 | `openwrt` | OpenWrt 21.02+ routers and APs (uci, DSA) | yes |
 | `generic` | monitoring-only devices (APs, radios, servers, cameras) | n/a |
 | `web_gui` | Any switch with only a web page: TP-Link Easy Smart, Netgear Plus, UniFi, Omada, Zyxel GS1900... | manual steps |

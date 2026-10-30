@@ -167,6 +167,31 @@ def openwrt(p, cs) -> list[str]:
     return out
 
 
+
+# -------------------------------------------------------------------- Sophos
+
+def sophos(p, cs) -> list[str]:
+    out = [p.note("Protect > Web > URL groups, then a web policy and a firewall rule per client:")]
+    for c in cs:
+        who = c.get("name") or c.get("mac")
+        src = (f'MAC host "{c["slug"]}" = {c["mac"]} (Hosts and services > MAC host)' if c.get("mac")
+               else f'IP host "{c["slug"]}" = {c["ip"]} (Hosts and services > IP host)')
+        out += [
+            p.note(f"  {who}:"),
+            p.note(f"    1. {src}"),
+            p.note(f"    2. URL group 'vt-{c['slug']}' containing: {', '.join(c['domains'])}"),
+            p.note(f"    3. Web policy 'vt-{c['slug']}': rule Deny the 'vt-{c['slug']}' URL group"),
+            p.note(f"    4. Firewall rule for source {c['slug']}: enable 'Scan HTTP & HTTPS' and apply web policy 'vt-{c['slug']}'"),
+        ]
+        s3 = c.get("schedule")
+        if s3:
+            days = ", ".join(s3.get("days", [])) or "every day"
+            out.append(p.note(f"    5. Attach a schedule ({s3.get('from')}-{s3.get('to')} on {days}) to that firewall rule "
+                              "(System services > Schedule)"))
+    out.append(p.note("HTTPS filtering needs decryption: Protect > Web > Decryption, and install the SFOS CA on the clients"))
+    return out
+
+
 def render(plugin) -> list[str]:
     cs = clients(plugin)
     if not cs:
@@ -178,6 +203,8 @@ def render(plugin) -> list[str]:
         return out + fortinet(plugin, cs)
     if plugin.key == "openwrt":
         return out + openwrt(plugin, cs)
+    if plugin.key == "sophos":
+        return out + sophos(plugin, cs)
     steps = []
     for c in cs:
         who = c.get("name") or c.get("mac")
@@ -219,6 +246,6 @@ def validate(net, device) -> tuple[list[str], list[str]]:
                 warnings.append(f"{where}: unknown category {cat!r} (known: {', '.join(CATEGORIES)})")
     from ..vendors import REGISTRY
     plugin = REGISTRY.get(device.vendor)
-    if plugin and plugin.key not in ("mikrotik_routeros", "fortinet", "openwrt"):
+    if plugin and plugin.key not in ("mikrotik_routeros", "fortinet", "openwrt", "sophos"):
         warnings.append(f"{where}: {plugin.title} gets manual steps for content filtering")
     return errors, warnings

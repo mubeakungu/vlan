@@ -236,3 +236,48 @@ class PfSense(Vendor):
                         "  </rule>"]
             out.append("</filter>")
         return out
+
+
+class Sophos(Vendor):
+    key = "sophos"
+    title = "Sophos Firewall (SFOS)"
+    covers = "Sophos XG/XGS firewall, SFOS v18-v21 (configured in Web Admin or the XML API)"
+    netmiko_type = None
+    pushable = False
+    supports_switching = False
+    supports_policies = True
+    requires_parent = True
+    comment = "#"
+
+    def l3_name(self, v) -> str:
+        # SFOS names a tagged VLAN interface <base port>.<vlan id>, e.g. Port1.10
+        return f"{self.dev.parent_interface or 'Port1'}.{v.id}"
+
+    def header(self) -> list[str]:
+        return [
+            f"# Sophos Firewall (SFOS) setup for {self.dev.name}.",
+            "# SFOS is configured in Web Admin, not by pasting CLI, so the steps below name the exact",
+            "# pages and the values to enter. To automate instead, POST each object as XML to the API at",
+            "#   https://<firewall-ip>:<admin-https-port>/webconsole/APIController",
+            "# wrapped in <Request><Login><Username>..</Username><Password>..</Password></Login>",
+            "#   <Set operation=\"add\"> ... </Set></Request>  (enable: Administration > Device access > API).",
+            f"# VLANs: {', '.join(f'{v.id} {v.name}' for v in self.vlans) or 'none'}",
+        ]
+
+    def render(self) -> list[str]:
+        parent = self.dev.parent_interface or "Port1"
+        router = self.dev.options.get("router") or {}
+        dmz_ids = set(model.parse_vlan_list(router.get("dmz"), self.net.vlans))
+        out = [self.note("---- VLAN interfaces (Network > Interfaces > Add interface > Add VLAN) ----"),
+               self.note("LAN and DMZ are built-in zones; assign each VLAN to one of them:")]
+        for v in self.routed:
+            zone = "DMZ" if v.id in dmz_ids else "LAN"
+            line = (f"  {self.l3_name(v)}: hardware {parent}, VLAN ID {v.id}, zone {zone}, "
+                    f"IPv4 {v.ip}/{v.prefixlen} (static)")
+            if v.description:
+                line += f', description "{v.description}"'
+            out.append(self.note(line))
+            if v.dhcp_relay:
+                out.append(self.note(f"    DHCP relay to {', '.join(v.dhcp_relay)} "
+                                     "(Network > DHCP > Relay)"))
+        return out

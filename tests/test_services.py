@@ -174,6 +174,7 @@ def test_link_validation():
     ("vyos", {"parent_interface": "eth1", "routing": "all"}),
     ("fortinet", {"parent_interface": "port2", "routing": "all"}),
     ("openwrt", {"parent_interface": "eth0", "routing": "all"}),
+    ("sophos", {"parent_interface": "Port1", "routing": "all"}),
 ])
 def test_dmz_isolated_and_reachable(vendor, extra):
     dev = {"name": "edge", "vendor": vendor,
@@ -194,6 +195,9 @@ def test_dmz_isolated_and_reachable(vendor, extra):
         assert '"USERS-to-DMZ"' in text                       # LAN can still manage the DMZ
     elif vendor == "openwrt":
         assert "firewall.zone_vlan70" in text or "REJECT" in text
+    elif vendor == "sophos":
+        assert "zone DMZ" in text                             # DMZ VLAN assigned to the DMZ zone
+        assert "blocked from the rest of the LAN" in text
 
 
 def test_dmz_scanner_flags_unisolated_dmz():
@@ -207,3 +211,40 @@ def test_dmz_scanner_flags_unisolated_dmz():
     data["devices"][0]["router"]["dmz"] = ["DMZ"]
     rep2 = run_scan(model.from_dict(data), ports=False)
     assert not any("can reach the LAN" in f.title for f in rep2.findings)
+
+
+def test_sophos_firewall_full():
+    data = {"vlans": [{"id": 10, "name": "USERS", "gateway": "192.168.10.1/24"},
+                      {"id": 20, "name": "GUEST", "gateway": "192.168.20.1/24"},
+                      {"id": 70, "name": "DMZ", "gateway": "192.168.70.1/24"}],
+            "security": {"siem": "192.168.99.50"},
+            "devices": [{"name": "fw", "vendor": "sophos", "parent_interface": "Port1", "routing": "all",
+                         "router": {"wan": {"interface": "Port2", "mode": "dhcp"}, "dns": ["1.1.1.1"],
+                                    "dhcp_server": "all", "isolate": ["GUEST"], "dmz": ["DMZ"],
+                                    "port_forwards": [{"name": "web", "proto": "tcp", "port": 443, "to": "192.168.70.10"}]},
+                         "security": {"ips": "prevent"},
+                         "filtering": [{"name": "kids", "mac": "AA:BB:CC:DD:EE:01", "vlan": "USERS",
+                                        "categories": ["adult"]}]}]}
+    net = model.from_dict(data)
+    assert validate(net)[0] == []
+    text = get("sophos")(net, net.devices[0]).generate()
+    # VLAN interfaces named <port>.<id> and placed in the right zone
+    assert "Port1.10: hardware Port1, VLAN ID 10, zone LAN" in text
+    assert "Port1.70: hardware Port1, VLAN ID 70, zone DMZ" in text
+    # router: WAN, DHCP scope, DNAT port-forward, isolation
+    assert "set Port2 to zone WAN" in text
+    assert "add scope on Port1.10" in text
+    assert "add DNAT 'web'" in text and "192.168.70.10" in text
+    assert "GUEST-to-WAN" in text and "stays isolated" in text
+    # services: IPS, syslog to the SIEM, content filtering
+    assert "Intrusion prevention" in text
+    assert "192.168.99.50" in text
+    assert "URL group 'vt-kids'" in text and "pornhub.com" in text
+    # Sophos is GUI/API, not CLI push
+    p = get("sophos")(net, net.devices[0])
+    assert p.pushable is False and p.netmiko_type is None
+
+
+def test_sophos_aliases_resolve():
+    for alias in ("sfos", "xg", "xgs", "sophos_xg"):
+        assert get(alias).key == "sophos"

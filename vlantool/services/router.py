@@ -443,6 +443,61 @@ def openwrt(p, c) -> list[str]:
     return router_lines(p, c)
 
 
+
+# --------------------------------------------------------------- Sophos SFOS
+
+def sophos(p, c) -> list[str]:
+    """Sophos Firewall is driven from Web Admin; emit the exact pages and values."""
+    out = [p.note("---- router (Sophos Web Admin) ----")]
+    wan = c["wan"]
+    wif = wan.get("interface")
+    if c.get("hostname"):
+        out.append(p.note(f"Administration > Admin settings: set appliance name to {c['hostname']}"))
+    if wif:
+        if wan["mode"] == "static":
+            desc = f"static {wan['address']}, gateway {wan['gateway']}"
+        elif wan["mode"] == "pppoe":
+            desc = f"PPPoE, username {wan.get('user', '')}"
+        else:
+            desc = "DHCP"
+        out.append(p.note(f"Network > Interfaces: set {wif} to zone WAN, IPv4 {desc}"))
+        if wan["mode"] == "static":
+            out.append(p.note(f"Routing > Gateways: default gateway {wan['gateway']} on {wif} "
+                              "(auto-added for DHCP/PPPoE)"))
+    if c["nat"] and wif:
+        out.append(p.note("NAT: SFOS source-NATs via the LAN-to-WAN firewall rule. On that rule set "
+                          "'Rewrite source address (masquerading)' = MASQ (the default)."))
+    if c["dns"]:
+        out.append(p.note(f"Network > DNS: request servers {', '.join(c['dns'])}; the firewall answers LAN clients"))
+    for vid in c["dhcp_ids"]:
+        v = p.vlan(vid)
+        start, end = pool(v)
+        out.append(p.note(f"Network > DHCP > Server: add scope on {p.l3_name(v)}: range {start}-{end}, "
+                          f"gateway {v.ip}, netmask {v.netmask}, DNS {dns_for(c, v)}"))
+    out.append(p.note("Rules and policies > Firewall rules (SFOS has no default allow):"))
+    lan = [v for v in p.routed if v.id not in c["isolate_ids"]]
+    if lan and wif:
+        names = ", ".join(p.l3_name(v) for v in lan)
+        out.append(p.note(f"  add rule 'LAN-to-WAN' accept, source zone LAN ({names}), dest zone WAN, "
+                          "services Any, with MASQ"))
+    for vid in c["isolate_ids"]:
+        v = p.vlan(vid)
+        zone = "DMZ" if vid in c["dmz_ids"] else "LAN"
+        out.append(p.note(f"  add rule '{v.name}-to-WAN' accept, source {p.l3_name(v)} (zone {zone}), dest zone WAN "
+                          "only -- create NO rule from this VLAN to other LAN networks, so it stays isolated"))
+    for f in c["port_forwards"]:
+        proto, port = f.get("proto", "tcp"), f["port"]
+        to, to_port = f["to"], f.get("to_port", f["port"])
+        out.append(p.note(f"Rules and policies > NAT rules: add DNAT '{f.get('name', port)}' -- inbound on {wif or 'WAN'}, "
+                          f"original service {proto}/{port} -> translated host {to}, translated port {to_port}; "
+                          "pair it with a WAN-to-(DMZ/LAN) firewall rule that allows it"))
+    for r in c["static_routes"]:
+        out.append(p.note(f"Routing > Static routing: {r['to']} via {r['via']}"))
+    if c["ntp"]:
+        out.append(p.note(f"Administration > Time: use NTP servers {', '.join(c['ntp'])}"))
+    return out
+
+
 HANDLERS = {
     "mikrotik_routeros": mikrotik,
     "cisco_ios": cisco,
@@ -450,6 +505,7 @@ HANDLERS = {
     "vyos": vyos,
     "fortinet": fortinet,
     "openwrt": openwrt,
+    "sophos": sophos,
 }
 
 

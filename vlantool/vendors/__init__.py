@@ -12,7 +12,7 @@ from .comware import HPComware, HuaweiVRP
 from .generic import Generic
 from .juniper import JuniperJunos
 from .openwrt import OpenWrt
-from .routers import EdgeOS, FortiGate, MikroTik, PfSense, VyOS
+from .routers import EdgeOS, FortiGate, MikroTik, PfSense, Sophos, VyOS
 from .smallbiz import DLinkLegacy, ExtremeEXOS, FastPath, Netgear, RuckusICX, TPLinkJetStream, Zyxel
 from .webgui import WebGUI
 
@@ -21,7 +21,7 @@ PLUGINS: list[type[Vendor]] = [
     JuniperJunos, ArubaAOSCX, ArubaOSSwitch, HPComware, HuaweiVRP,
     DLinkDGS, DLinkLegacy, TPLinkJetStream, FastPath, Netgear,
     ExtremeEXOS, RuckusICX, Zyxel,
-    MikroTik, EdgeOS, VyOS, FortiGate, PfSense, OpenWrt,
+    MikroTik, EdgeOS, VyOS, FortiGate, PfSense, Sophos, OpenWrt,
     WebGUI, Generic,
 ]
 
@@ -37,6 +37,7 @@ ALIASES = {
     "ubiquiti": "ubiquiti_edgeswitch", "edgerouter": "ubiquiti_edgeos", "edgeos": "ubiquiti_edgeos",
     "unifi": "web_gui", "omada": "web_gui", "mikrotik": "mikrotik_routeros", "routeros": "mikrotik_routeros",
     "fortigate": "fortinet", "fortios": "fortinet", "opnsense": "pfsense", "extreme": "extreme_exos",
+    "sfos": "sophos", "xg": "sophos", "xgs": "sophos", "sophos_xg": "sophos", "sophosfw": "sophos",
     "ruckus": "ruckus_icx", "brocade": "ruckus_icx", "cisco_sg": "cisco_smb", "cbs": "cisco_smb",
     "smart": "web_gui", "web": "web_gui", "ap": "generic", "lede": "openwrt", "glinet": "openwrt", "extender": "generic", "other": "generic",
 }
