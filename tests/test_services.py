@@ -248,3 +248,63 @@ def test_sophos_firewall_full():
 def test_sophos_aliases_resolve():
     for alias in ("sfos", "xg", "xgs", "sophos_xg"):
         assert get(alias).key == "sophos"
+
+
+def _billing_net(vendor="mikrotik_routeros", radius=None):
+    dev = {"name": "hap", "vendor": vendor, "parent_interface": "ether1", "routing": "all",
+           "billing": {"hotspot": {"interface": "GUEST", "dns_name": "login.hotspot",
+                                   "plans": [{"name": "1hour", "rate": "5M/5M", "session": "1h", "price": 50}],
+                                   "vouchers": [{"plan": "1hour", "count": 3}]},
+                       "pppoe": {"interface": "ether1", "pool": "10.6.0.2-10.6.0.254", "gateway": "10.6.0.1",
+                                 "plans": [{"name": "home", "rate": "10M/10M", "price": 1500}],
+                                 "subscribers": [{"user": "sub001", "plan": "home"}]}}}
+    if radius:
+        dev["billing"]["radius"] = radius
+    return model.from_dict({"vlans": [{"id": 20, "name": "GUEST", "gateway": "192.168.20.1/24"}], "devices": [dev]})
+
+
+def test_billing_mikrotik_hotspot_and_pppoe():
+    net = _billing_net()
+    assert validate(net)[0] == []
+    p = get("mikrotik_routeros")(net, net.devices[0])
+    text = p.generate()
+    assert "/ip hotspot add name=vt-hotspot interface=vlan20-GUEST" in text
+    assert "/ip hotspot user profile add name=1hour rate-limit=5M/5M session-timeout=1h" in text
+    assert text.count('comment="vlantool voucher"') == 3            # 3 voucher codes
+    assert "/interface pppoe-server server add service-name=pppoe interface=ether1 default-profile=home" in text
+    assert "/ppp secret add name=sub001" in text and "profile=home service=pppoe" in text
+    # a printable voucher list is produced as an extra file
+    files = p.extra_files()
+    voucher_file = next(v for k, v in files.items() if k.endswith("-vouchers.txt"))
+    assert "HOTSPOT VOUCHERS" in voucher_file and "PPPoE SUBSCRIBERS" in voucher_file and "1500" in voucher_file
+
+
+def test_billing_codes_are_stable_within_a_run():
+    net = _billing_net()
+    p = get("mikrotik_routeros")(net, net.devices[0])
+    assert p.generate() == p.generate()        # same secrets store -> identical codes
+
+
+def test_billing_radius_skips_local_accounts():
+    net = _billing_net(radius={"server": "192.168.99.60", "secret": "s3cr3t"})
+    text = get("mikrotik_routeros")(net, net.devices[0]).generate()
+    assert "/radius add service=hotspot,ppp address=192.168.99.60 secret=s3cr3t" in text
+    assert "/ppp aaa set use-radius=yes" in text
+    assert 'comment="vlantool voucher"' not in text                # users live on the billing server
+
+
+def test_billing_other_vendor_gets_steps():
+    net = _billing_net(vendor="fortinet")
+    errors, warnings = validate(net)
+    assert errors == [] and any("manual steps for billing" in w for w in warnings)
+    text = get("fortinet")(net, net.devices[0]).generate()
+    assert "captive-portal hotspot" in text and "PPPoE server" in text
+
+
+def test_billing_validation_unknown_plan():
+    net = model.from_dict({"vlans": [{"id": 20, "name": "GUEST", "gateway": "192.168.20.1/24"}],
+        "devices": [{"name": "r", "vendor": "mikrotik_routeros", "routing": "all",
+            "billing": {"hotspot": {"interface": "GUEST", "plans": [{"name": "1hour"}],
+                                    "vouchers": [{"plan": "nope", "count": 1}]}}}]})
+    errors = validate(net)[0]
+    assert any("unknown plan 'nope'" in e for e in errors)

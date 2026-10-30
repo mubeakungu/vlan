@@ -13,6 +13,7 @@ device, whatever the brand. Then watch it all from one monitoring dashboard.
 | Wireless | SSIDs mapped to VLANs, extender/repeater mode, mesh |
 | Security | IPS on firewalls, syslog to a SIEM, Wazuh EDR agents for Windows/Linux/macOS |
 | Filtering | block sites per device by MAC address, on a schedule |
+| Billing | sell internet: captive-portal hotspot vouchers and PPPoE subscriber plans (speed/time limits), optional RADIUS |
 | Control | manage every device over SSH/VPN: facts, diagnose, backup, run, logs, upgrade |
 | Scan | security scan of your own network (config audit + port scan), report-only |
 | Monitoring | ping, port checks, uptime/CPU over SSH, per-interface bandwidth & traffic, connected-device list, internet speed test, 24h history, down/up alerts (webhook, Telegram), dashboard |
@@ -272,6 +273,45 @@ domains is dropped. Generated for **MikroTik** (layer7 on the TLS hostname),
 nftset) and **Sophos Firewall** (URL group + web policy per MAC/IP host); other
 vendors get manual steps. For airtight HTTPS filtering, also
 point those clients at a filtering DNS resolver.
+
+## Billing: hotspot vouchers and PPPoE plans
+
+Turn a router into a prepaid internet seller: a captive-portal hotspot with
+time/speed voucher codes, and/or a PPPoE server with per-plan speed limits and
+subscriber accounts. MikroTik generates the full config; other vendors get
+step-by-step notes. Hand authentication to external billing software with the
+optional `radius` block.
+
+```yaml
+devices:
+  - name: hap
+    vendor: mikrotik_routeros
+    routing: all
+    billing:
+      hotspot:
+        interface: GUEST                 # a VLAN (name/id) or a raw interface
+        dns_name: login.hotspot
+        plans:
+          - {name: 1hour, rate: "5M/5M",   session: 1h, shared: 1, price: 50}
+          - {name: 1day,  rate: "10M/10M", session: 1d, price: 200}
+        vouchers:
+          - {plan: 1hour, count: 10}      # 10 printable one-hour codes
+          - {plan: 1day,  user: vip, password: keepme}
+      pppoe:
+        interface: ether3
+        pool: 10.80.0.2-10.80.0.254
+        gateway: 10.80.0.1
+        plans:
+          - {name: home-10m, rate: "10M/10M", price: 1500}
+        subscribers:
+          - {user: sub001, plan: home-10m}   # password generated if omitted
+      radius: {server: 192.168.99.60, secret: s3cr3t}   # optional
+```
+
+Generated voucher codes and passwords are stored in `<network>.secrets.json`,
+so they stay the same every time you regenerate. `vlantool generate -o out/`
+also writes `out/<device>-vouchers.txt`, a printable list of every code, plan
+and price to hand out or tape to the wall.
 
 ## Managing the live network
 

@@ -88,6 +88,28 @@ devices:
       ssids:
         - {ssid: Home,  passphrase: "home-passphrase-123", vlan: USERS, band: both}
         - {ssid: Guest, passphrase: "guest-pass-2024",     vlan: GUEST, band: 2ghz}
+    billing:                  # optional: sell internet by voucher (hotspot) and subscription (PPPoE)
+      hotspot:
+        interface: GUEST      # captive portal on the guest VLAN
+        dns_name: login.hotspot
+        plans:
+          - {name: 1hour, rate: "5M/5M",   session: 1h, shared: 1, price: 50}
+          - {name: 1day,  rate: "10M/10M", session: 1d, price: 200}
+        vouchers:
+          - {plan: 1hour, count: 10}        # 10 printable one-hour codes
+          - {plan: 1day,  count: 5}
+      pppoe:                  # subscriber connections with per-plan speed limits
+        interface: ether3
+        service: pppoe-isp
+        pool: 10.80.0.2-10.80.0.254
+        gateway: 10.80.0.1
+        dns: [1.1.1.1, 8.8.8.8]
+        plans:
+          - {name: home-10m, rate: "10M/10M", price: 1500}
+          - {name: home-20m, rate: "20M/20M", price: 2500}
+        subscribers:
+          - {user: sub001, plan: home-10m}
+          - {user: sub002, plan: home-20m}
 
   # Office switch fed by the hAP trunk
   - name: office-switch

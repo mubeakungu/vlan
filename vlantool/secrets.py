@@ -79,6 +79,18 @@ class Secrets:
             self._save()
         return self.data[ident]
 
+    def voucher_code(self, ident: str, length: int = 8) -> str:
+        """Stable random code/password for ident (hotspot vouchers, PPPoE passwords).
+
+        Uses an unambiguous alphabet (no 0/O/1/I) so codes are easy to read off a
+        printed ticket. Created once and reused, like the WireGuard keys.
+        """
+        if ident not in self.data:
+            alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+            self.data[ident] = "".join(alphabet[b % len(alphabet)] for b in os.urandom(length))
+            self._save()
+        return self.data[ident]
+
     def _save(self) -> None:
         if not self.path:
             return
