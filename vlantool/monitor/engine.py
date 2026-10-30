@@ -131,6 +131,10 @@ class Monitor:
         if not d.host:
             return s
         latency = checks.ping(d.host)
+        if latency is None:
+            # many devices (MikroTik especially) drop ICMP but answer on WinBox/SSH/HTTP,
+            # so a no-ping host is only really down if TCP can't reach it either
+            latency = checks.tcp_ping(d.host)
         ports = {str(p): checks.tcp_check(d.host, int(p)) is not None
                  for p in (d.options.get("monitor") or {}).get("ports", [])}
         if latency is None:

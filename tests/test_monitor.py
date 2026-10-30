@@ -293,3 +293,20 @@ def test_talkers_flags_accounting_off(monkeypatch, tmp_path):
     m._last_stats["hap"] = 0; m.run_once()
     m._last_stats["hap"] = 0; m.run_once()
     assert m.snapshot()["traffic_sources"]["accounting_off"] is True
+
+
+def test_check_device_up_when_icmp_blocked_but_tcp_open(monkeypatch, tmp_path):
+    m = Monitor(_net(), tmp_path / "m.db")
+    monkeypatch.setattr(checks, "ping", lambda host, timeout=2.0: None)        # ICMP blocked
+    monkeypatch.setattr(checks, "tcp_ping", lambda host, timeout=2.0: 4.2)     # WinBox/SSH answers
+    monkeypatch.setattr(m, "_collect", lambda *a, **k: None)
+    s = m.check_device(m.net.devices[0])
+    assert s.state == "up" and s.latency_ms == 4.2
+
+
+def test_check_device_down_when_both_fail(monkeypatch, tmp_path):
+    m = Monitor(_net(), tmp_path / "m.db")
+    monkeypatch.setattr(checks, "ping", lambda host, timeout=2.0: None)
+    monkeypatch.setattr(checks, "tcp_ping", lambda host, timeout=2.0: None)
+    s = m.check_device(m.net.devices[0])
+    assert s.state == "down"
