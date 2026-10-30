@@ -141,6 +141,60 @@ def cmd_monitor(args) -> None:
     serve(args.file, host=args.host, port=args.port, monitor=True, db=args.db)
 
 
+def cmd_control(args) -> None:
+    from . import controller as ctl
+    net = _load_checked(args.file)
+    out_dir = Path(args.out) if args.out else None
+    action = args.action
+
+    if action == "run":
+        if not args.command:
+            sys.exit("control run needs a command, e.g. control net.yaml run \"/system reboot\" -d hap")
+        if not args.device:
+            sys.exit("control run needs -d <device> (run commands on one device at a time)")
+
+    def do(net, d):
+        if action == "facts":
+            return ctl.facts(net, d)
+        if action == "diagnose":
+            return ctl.diagnose(net, d)
+        if action == "backup":
+            return ctl.backup(net, d, out_dir)
+        if action == "logs":
+            return ctl.logs(net, d)
+        if action == "run":
+            return ctl.run(net, d, args.command, config=args.config)
+        if action == "upgrade":
+            return ctl.upgrade(net, d, apply=args.apply, out_dir=out_dir)
+
+    results = ctl.each(net, do, args.device)
+    failed = 0
+    for r in results:
+        failed += not r.ok
+        head = f"===== {r.device}: {'OK' if r.ok else 'FAILED'}"
+        if action in ("facts", "diagnose") and r.data:
+            print(head)
+            for k, v in r.data.items():
+                print(f"    {k}: {v}")
+        else:
+            print(f"{head}\n{r.output or r.error}")
+    if failed:
+        sys.exit(f"{failed} device(s) failed")
+
+
+def cmd_scan(args) -> None:
+    from . import scan
+    net = _load_checked(args.file)
+    report = scan.run_scan(net, ports=not args.no_ports, passwords=args.check_passwords)
+    print(scan.text_report(report))
+    if args.out:
+        Path(args.out).write_text(scan.html_report(report))
+        print(f"wrote {args.out}")
+    worst = max((f.rank for f in report.findings), default=0)
+    if worst >= 3:  # high or critical
+        sys.exit(1)
+
+
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="vlantool", description="Define VLANs once, configure any switch, router or firewall.")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -187,6 +241,23 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8080)
     p.set_defaults(func=cmd_monitor)
+
+    p = sub.add_parser("control", help="manage devices over SSH: facts, diagnose, backup, logs, run, upgrade")
+    p.add_argument("file")
+    p.add_argument("action", choices=["facts", "diagnose", "backup", "logs", "run", "upgrade"])
+    p.add_argument("command", nargs="*", help="for 'run': the command(s) to execute")
+    p.add_argument("-d", "--device", action="append", help="only this device (repeatable)")
+    p.add_argument("-o", "--out", help="folder for backups / pre-upgrade backups")
+    p.add_argument("--config", action="store_true", help="for 'run': send the commands in config mode")
+    p.add_argument("--apply", action="store_true", help="for 'upgrade': actually install (default: only check)")
+    p.set_defaults(func=cmd_control)
+
+    p = sub.add_parser("scan", help="security scan of your own network: config audit + port scan (report-only)")
+    p.add_argument("file")
+    p.add_argument("-o", "--out", help="write an HTML report to this file")
+    p.add_argument("--no-ports", action="store_true", help="skip the live port scan (audit the config only)")
+    p.add_argument("--check-passwords", action="store_true", help="also test devices for default/weak SSH passwords")
+    p.set_defaults(func=cmd_scan)
 
     args = ap.parse_args(argv)
     args.func(args)

@@ -12,6 +12,9 @@ device, whatever the brand. Then watch it all from one monitoring dashboard.
 | VPN | WireGuard server with ready-to-import phone/laptop files; IPsec IKEv2 site-to-site |
 | Wireless | SSIDs mapped to VLANs, extender/repeater mode, mesh |
 | Security | IPS on firewalls, syslog to a SIEM, Wazuh EDR agents for Windows/Linux/macOS |
+| Filtering | block sites per device by MAC address, on a schedule |
+| Control | manage every device over SSH/VPN: facts, diagnose, backup, run, logs, upgrade |
+| Scan | security scan of your own network (config audit + port scan), report-only |
 | Monitoring | ping, port checks, uptime/CPU over SSH, 24h history, down/up alerts (webhook, Telegram), dashboard |
 
 See `examples/full-network.yaml` for every feature in one file.
@@ -205,6 +208,67 @@ vlantool edr network.yaml -o out/
 With `security.wazuh.api` set, `vlantool monitor` shows every endpoint's agent
 (active, disconnected, not enrolled) and alerts when one drops off.
 
+## Content filtering by device
+
+Block sites for a specific device by its MAC address, optionally on a schedule:
+
+```yaml
+devices:
+  - name: hap
+    vendor: mikrotik_routeros
+    routing: all
+    filtering:
+      - name: kids-tablet
+        mac: AA:BB:CC:DD:EE:01
+        vlan: USERS                 # the VLAN it's on (used to pin a static IP), or give 'ip:'
+        block: [facebook.com, tiktok.com]
+        categories: [adult, gambling]           # built-in lists: adult, gambling, social, streaming, ads
+        schedule: {days: [mon,tue,wed,thu,fri], from: "22:00", to: "06:30"}
+```
+
+The device is pinned to a static IP by its MAC, and traffic from it to those
+domains is dropped. Generated for **MikroTik** (layer7 on the TLS hostname),
+**FortiGate** (web filter with a MAC address object) and **OpenWrt** (dnsmasq
+nftset); other vendors get manual steps. For airtight HTTPS filtering, also
+point those clients at a filtering DNS resolver.
+
+## Managing the live network
+
+Once the network is up, manage every device from one place over SSH (run it
+across your WireGuard VPN to reach sites remotely):
+
+```bash
+vlantool control network.yaml facts                  # model, firmware, uptime of each device
+vlantool control network.yaml diagnose               # reachability + health across the network
+vlantool control network.yaml backup -o backups/     # save every device's running config
+vlantool control network.yaml logs -d hap            # pull recent logs from one device
+vlantool control network.yaml run "/system reboot" -d hap
+vlantool control network.yaml upgrade -d hap         # check for firmware updates
+vlantool control network.yaml upgrade -d hap --apply # back up first, then install (MikroTik/OpenWrt)
+```
+
+Credentials come from `VLANTOOL_USERNAME`/`VLANTOOL_PASSWORD`, or
+`VLANTOOL_PASSWORD_<DEVICE>` per device, or each device's `username`. This is
+central management of your own gear: it logs in as you, and never relays or
+intercepts other devices' traffic.
+
+## Security scanning
+
+Scan your own network for weaknesses. It only probes the hosts named in your
+file, and by default changes nothing:
+
+```bash
+vlantool scan network.yaml                   # config audit + live port scan
+vlantool scan network.yaml -o report.html    # also write an HTML report
+vlantool scan network.yaml --check-passwords # also test devices for default/weak SSH passwords
+```
+
+It flags weak Wi-Fi passphrases and VPN keys, reused secrets, disabled
+firewalls, un-isolated guest VLANs, exposed management ports (Telnet, FTP,
+plain HTTP, WinBox on the internet) and, with `--check-passwords`, devices
+still on their factory login. The exit code is non-zero when anything high or
+critical is found, so you can run it in a scheduled job.
+
 ## Trying it on a MikroTik hAP
 
 `examples/mikrotik-hap.yaml` is written for a hAP on its default config
@@ -250,6 +314,7 @@ Run it from a PC plugged into ether2 or ether3. Undo with
 | `fortinet` | FortiGate | yes |
 | `pfsense` | pfSense / OPNsense config.xml sections | file only |
 | `openwrt` | OpenWrt 21.02+ routers and APs (uci, DSA) | yes |
+| `generic` | monitoring-only / manual-step devices (APs, radios, servers) | n/a |
 | `generic` | monitoring-only devices (APs, radios, servers, cameras) | n/a |
 | `web_gui` | Any switch with only a web page: TP-Link Easy Smart, Netgear Plus, UniFi, Omada, Zyxel GS1900... | manual steps |
 

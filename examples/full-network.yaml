@@ -73,6 +73,12 @@ devices:
           remote: [10.60.0.0/24]
     security:
       ips: prevent            # brute-force + port-scan banning on RouterOS
+    filtering:                # block sites for specific devices by MAC address
+      - name: kids-tablet
+        mac: AA:BB:CC:DD:EE:01
+        vlan: USERS
+        categories: [adult, gambling]
+        schedule: {days: [mon,tue,wed,thu,fri], from: "22:00", to: "06:30"}
     wireless:
       country: kenya
       ssids:

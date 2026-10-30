@@ -8,9 +8,9 @@ A vendor without native support gets a manual step list instead of silence.
 """
 from __future__ import annotations
 
-from . import links, router, security, vpn, wireless
+from . import filtering, links, router, security, vpn, wireless
 
-SERVICES = [router, links, vpn, wireless, security]
+SERVICES = [router, links, vpn, wireless, filtering, security]
 
 
 def render_services(plugin) -> list[str]:
