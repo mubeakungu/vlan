@@ -128,3 +128,164 @@ def ssh_stats(device, timeout: int = 15) -> dict:
     with ConnectHandler(**params) as conn:
         text = "\n".join(conn.send_command(c) for c in commands)
     return parser(text)
+
+
+# ------------------------------------------------- interface traffic counters
+# vendor key -> (commands, parser). Parsers return {iface: (rx_bytes, tx_bytes)}.
+
+def _mt_counters(text: str) -> dict:
+    out = {}
+    for line in text.splitlines():
+        parts = line.split("|")
+        if len(parts) == 4 and parts[0] == "":
+            name, rx, tx = parts[1], parts[2], parts[3]
+            if rx.isdigit() and tx.isdigit():
+                out[name] = (int(rx), int(tx))
+    return out
+
+
+def _cisco_counters(text: str) -> dict:
+    """Parse 'show interfaces' for input/output byte counters."""
+    out, cur = {}, None
+    for line in text.splitlines():
+        m = re.match(r"^(\S+) is (?:up|down|administratively down),", line)
+        if m:
+            cur = m.group(1)
+        m = re.search(r"(\d+) packets input, (\d+) bytes", line)
+        if m and cur:
+            out.setdefault(cur, [0, 0])[0] = int(m.group(2))
+        m = re.search(r"(\d+) packets output, (\d+) bytes", line)
+        if m and cur:
+            out.setdefault(cur, [0, 0])[1] = int(m.group(2))
+    return {k: (v[0], v[1]) for k, v in out.items()}
+
+
+def _linux_counters(text: str) -> dict:
+    """Parse /proc/net/dev (EdgeOS/VyOS/OpenWrt over SSH)."""
+    out = {}
+    for line in text.splitlines():
+        if ":" not in line:
+            continue
+        name, rest = line.split(":", 1)
+        cols = rest.split()
+        if len(cols) >= 9 and cols[0].isdigit():
+            out[name.strip()] = (int(cols[0]), int(cols[8]))  # rx bytes, tx bytes
+    return out
+
+
+IFACE_COUNTERS = {
+    "mikrotik_routeros": ([':foreach i in=[/interface find] do={:put ("|".([/interface get $i name])."|".'
+                           '([/interface get $i rx-byte])."|".([/interface get $i tx-byte]))}'], _mt_counters),
+    "cisco_ios": (["show interfaces"], _cisco_counters),
+    "arista_eos": (["show interfaces"], _cisco_counters),
+    "ubiquiti_edgeos": (["cat /proc/net/dev"], _linux_counters),
+    "vyos": (["cat /proc/net/dev"], _linux_counters),
+    "openwrt": (["cat /proc/net/dev"], _linux_counters),
+}
+
+
+# ------------------------------------------------------- connected devices
+# vendor key -> (commands, parser). Parsers return a list of client dicts:
+#   {ip, mac, host, iface, source}   (source: dhcp / arp / wifi)
+
+def _kv(line: str, key: str) -> str | None:
+    m = re.search(rf'{key}=("[^"]*"|\S+)', line)
+    return m.group(1).strip('"') if m else None
+
+
+def _mt_clients(text: str) -> list[dict]:
+    """Three terse blocks joined by markers: leases, arp, wireless registrations."""
+    out: dict[str, dict] = {}
+    section = None
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("### "):
+            section = s[4:]
+            continue
+        mac = _kv(line, "mac-address")
+        if not mac:
+            continue
+        mac = mac.upper()
+        c = out.setdefault(mac, {"mac": mac, "ip": None, "host": None, "iface": None, "source": None})
+        if section == "leases":
+            c["ip"] = _kv(line, "active-address") or _kv(line, "address") or c["ip"]
+            c["host"] = _kv(line, "host-name") or c["host"]
+            c["iface"] = _kv(line, "server") or c["iface"]
+            c["source"] = "dhcp"
+        elif section == "arp":
+            c["ip"] = c["ip"] or _kv(line, "address")
+            c["iface"] = c["iface"] or _kv(line, "interface")
+            c["source"] = c["source"] or "arp"
+        elif section == "wifi":
+            c["iface"] = _kv(line, "interface") or c["iface"]
+            c["source"] = "wifi"
+            sig = _kv(line, "signal-strength")
+            if sig:
+                c["signal"] = sig
+    return list(out.values())
+
+
+def _cisco_clients(text: str) -> list[dict]:
+    out: dict[str, dict] = {}
+    for line in text.splitlines():
+        # show ip dhcp binding: IP   MAC(aabb.ccdd.eeff)   lease   type
+        m = re.match(r"\s*(\d+\.\d+\.\d+\.\d+)\s+([0-9a-fA-F.:]{12,17})", line)
+        if m:
+            mac = _norm_mac(m.group(2))
+            out.setdefault(mac, {"mac": mac, "ip": None, "host": None, "iface": None, "source": "dhcp"})["ip"] = m.group(1)
+        # show ip arp: Protocol Address Age Hardware-Addr Type Interface
+        m = re.search(r"Internet\s+(\d+\.\d+\.\d+\.\d+)\s+\S+\s+([0-9a-fA-F.]{14})\s+\S+\s+(\S+)", line)
+        if m:
+            mac = _norm_mac(m.group(2))
+            c = out.setdefault(mac, {"mac": mac, "ip": None, "host": None, "iface": None, "source": "arp"})
+            c["ip"] = c["ip"] or m.group(1)
+            c["iface"] = c["iface"] or m.group(3)
+    return list(out.values())
+
+
+def _norm_mac(raw: str) -> str:
+    h = re.sub(r"[^0-9a-fA-F]", "", raw).upper()
+    return ":".join(h[i:i + 2] for i in range(0, 12, 2)) if len(h) == 12 else raw.upper()
+
+
+CLIENTS = {
+    "mikrotik_routeros": ([':put "### leases"', "/ip dhcp-server lease print terse",
+                           ':put "### arp"', "/ip arp print terse",
+                           ':put "### wifi"', "/interface wireless registration-table print terse"], _mt_clients),
+    "cisco_ios": (["show ip dhcp binding", "show ip arp"], _cisco_clients),
+}
+
+
+def ssh_collect(device, timeout: int = 15, want=("stats", "traffic", "clients")) -> dict:
+    """One Netmiko session: device stats, interface byte counters, and connected clients."""
+    from netmiko import ConnectHandler
+
+    from ..vendors import get
+
+    plugin = get(device.vendor)
+    if not plugin.netmiko_type:
+        return {}
+    params = {
+        "device_type": plugin.netmiko_type, "host": device.host, "port": device.port,
+        "username": device.username or os.environ.get("VLANTOOL_USERNAME"),
+        "password": os.environ.get("VLANTOOL_PASSWORD", ""),
+        "timeout": timeout,
+    }
+    plan = []
+    if "stats" in want and plugin.key in STATS:
+        plan.append(("stats", *STATS[plugin.key]))
+    if "traffic" in want and plugin.key in IFACE_COUNTERS:
+        plan.append(("traffic", *IFACE_COUNTERS[plugin.key]))
+    if "clients" in want and plugin.key in CLIENTS:
+        plan.append(("clients", *CLIENTS[plugin.key]))
+    if not plan:
+        return {}
+    out: dict = {}
+    with ConnectHandler(**params) as conn:
+        for name, commands, parser in plan:
+            try:
+                text = "\n".join(conn.send_command(c) for c in commands)
+                out[name] = parser(text)
+            except Exception as exc:
+                out.setdefault("errors", {})[name] = str(exc).splitlines()[0][:160]
+    return out

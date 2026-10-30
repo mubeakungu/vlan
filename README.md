@@ -15,7 +15,7 @@ device, whatever the brand. Then watch it all from one monitoring dashboard.
 | Filtering | block sites per device by MAC address, on a schedule |
 | Control | manage every device over SSH/VPN: facts, diagnose, backup, run, logs, upgrade |
 | Scan | security scan of your own network (config audit + port scan), report-only |
-| Monitoring | ping, port checks, uptime/CPU over SSH, 24h history, down/up alerts (webhook, Telegram), dashboard |
+| Monitoring | ping, port checks, uptime/CPU over SSH, per-interface bandwidth & traffic, connected-device list, internet speed test, 24h history, down/up alerts (webhook, Telegram), dashboard |
 
 See `examples/full-network.yaml` for every feature in one file.
 
@@ -152,7 +152,11 @@ vlantool gui network.yaml --monitor      # editor and dashboard together
 ```yaml
 monitoring:
   interval: 30                 # seconds between checks
-  ssh_stats_every: 300         # uptime/CPU login (MikroTik, Cisco, Arista, Junos, EdgeOS, VyOS); 0 = off
+  ssh_stats_every: 300         # SSH login for stats/bandwidth/clients (MikroTik, Cisco, Junos, EdgeOS, VyOS...); 0 = off
+  traffic: true                # per-interface throughput + byte totals (default on)
+  clients: true                # connected devices: DHCP leases + ARP + Wi-Fi (default on)
+  speedtest_every: 3600        # internet speed test every N seconds (0 = only the dashboard button)
+  speedtest: {bytes: 25000000} # size per run; override download/upload URLs if Cloudflare is blocked
   webhook: https://...         # JSON POST on every alert (Slack, Discord, n8n, ...)
   telegram: {token: "123:ABC", chat_id: "456"}
 devices:
@@ -164,6 +168,13 @@ devices:
 
 SSH stats use `VLANTOOL_USERNAME`/`VLANTOOL_PASSWORD` (or the device's
 `username`). History is kept in `<network>.monitor.db` (SQLite).
+
+The dashboard shows each device's **bandwidth** (Mbps in/out per interface) and
+traffic totals, a network-wide **connected-devices** table (IP, MAC, hostname,
+VLAN, and whether it's wired or Wi-Fi), and an **internet speed test** with a
+"Run test" button plus scheduled runs. Bandwidth and byte counters come from
+MikroTik, Cisco, EdgeOS/VyOS and OpenWrt; the client list from MikroTik and
+Cisco (other vendors show reachability and uptime only).
 
 ## Security: IPS, log forwarding and EDR
 

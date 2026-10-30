@@ -3,8 +3,12 @@
 Configure in the network file:
 
     monitoring:
-      interval: 30              # seconds between rounds
-      ssh_stats_every: 300      # seconds between uptime/CPU logins (0 = off)
+      interval: 30              # seconds between reachability rounds
+      ssh_stats_every: 300      # seconds between SSH logins for stats/traffic/clients (0 = off)
+      traffic: true             # collect per-interface throughput (default on)
+      clients: true             # collect connected devices (DHCP/ARP/Wi-Fi) (default on)
+      speedtest_every: 3600     # seconds between internet speed tests (0 = only on demand)
+      speedtest: {download: "https://speed.cloudflare.com/__down?bytes={bytes}", bytes: 25000000}
       webhook: https://...      # optional: JSON POST on every alert (Slack, Discord, n8n...)
       telegram: {token: "123:ABC", chat_id: "456"}   # optional
 
@@ -13,6 +17,12 @@ Configure in the network file:
         vendor: generic         # monitoring-only device
         host: 192.168.88.20
         monitor: {ports: [80, 443]}   # optional extra TCP checks
+        # per-device: {ssh_stats: false} off logins, {interfaces: [ether1]} limit traffic to these
+
+Throughput, byte totals and the connected-device list come from one SSH login
+per round on routers that support it (MikroTik, Cisco, EdgeOS/VyOS, OpenWrt for
+traffic; MikroTik and Cisco for clients). The speed test runs from the monitor
+host and measures its internet path.
 """
 from __future__ import annotations
 
@@ -43,6 +53,9 @@ class Status:
     last_check: float | None = None
     last_change: float | None = None
     history: list[tuple[float, float | None]] = field(default_factory=list)
+    traffic: dict[str, dict] = field(default_factory=dict)   # iface -> {rx_bps, tx_bps, rx_bytes, tx_bytes}
+    clients: list[dict] = field(default_factory=list)         # connected devices seen by this box
+    collect_error: str | None = None
 
 
 class Monitor:
@@ -51,6 +64,10 @@ class Monitor:
         cfg = net.monitoring
         self.interval = float(cfg.get("interval", 30))
         self.stats_every = float(cfg.get("ssh_stats_every", 300))
+        self.want_traffic = cfg.get("traffic", True)
+        self.want_clients = cfg.get("clients", True)
+        self.speedtest_every = float(cfg.get("speedtest_every", 0))
+        self.speedtest_cfg = cfg.get("speedtest") or {}
         self.webhook = cfg.get("webhook")
         self.telegram = cfg.get("telegram") or {}
         self.db = sqlite3.connect(str(db_path), check_same_thread=False)
@@ -58,13 +75,19 @@ class Monitor:
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS samples (ts REAL, device TEXT, state TEXT, latency REAL);
             CREATE TABLE IF NOT EXISTS events (ts REAL, device TEXT, state TEXT, message TEXT);
+            CREATE TABLE IF NOT EXISTS traffic (ts REAL, device TEXT, iface TEXT, rx_bps REAL, tx_bps REAL);
+            CREATE TABLE IF NOT EXISTS speedtest (ts REAL, down_mbps REAL, up_mbps REAL, ping_ms REAL);
             CREATE INDEX IF NOT EXISTS samples_dev_ts ON samples (device, ts);
+            CREATE INDEX IF NOT EXISTS traffic_dev_ts ON traffic (device, ts);
         """)
         self.status: dict[str, Status] = {}
         self.endpoints: dict[str, dict] = {}   # EDR agents from Wazuh, by name
         self.edr_error: str | None = None
         self.wazuh = None
         self._last_stats: dict[str, float] = {}
+        self._traffic_prev: dict[str, dict[str, tuple[int, int, float]]] = {}
+        self._last_speedtest = 0.0
+        self._speedtest_running = False
         self._stop = threading.Event()
         self.reload(net)
 
@@ -100,13 +123,11 @@ class Monitor:
             state = "up"
 
         now = time.time()
+        mon_opts = d.options.get("monitor") or {}
         if state == "up" and self.stats_every and now - self._last_stats.get(d.name, 0) >= self.stats_every \
-                and checks.STATS.get(d.vendor) and (d.options.get("monitor") or {}).get("ssh_stats", True):
+                and mon_opts.get("ssh_stats", True):
             self._last_stats[d.name] = now
-            try:
-                s.stats, s.stats_error = checks.ssh_stats(d), None
-            except Exception as exc:  # auth failures etc. must not stop monitoring
-                s.stats_error = str(exc).splitlines()[0][:200]
+            self._collect(d, s, now, mon_opts)
 
         with self.lock:
             previous = s.state
@@ -120,11 +141,96 @@ class Monitor:
             self.db.commit()
         return s
 
+    def _collect(self, d: Device, s: Status, now: float, mon_opts: dict) -> None:
+        """One SSH login per round: device stats, interface throughput, connected clients."""
+        want = ["stats"]
+        if self.want_traffic and mon_opts.get("traffic", True):
+            want.append("traffic")
+        if self.want_clients and mon_opts.get("clients", True):
+            want.append("clients")
+        try:
+            data = checks.ssh_collect(d, want=tuple(want))
+        except Exception as exc:  # auth/connection failures must not stop monitoring
+            s.stats_error = str(exc).splitlines()[0][:200]
+            return
+        errs = data.get("errors") or {}
+        if "stats" in data:
+            s.stats, s.stats_error = data["stats"], errs.get("stats")
+        counters = data.get("traffic")
+        if counters is not None:
+            s.traffic = self._throughput(d.name, counters, now, mon_opts.get("interfaces"))
+        clients = data.get("clients")
+        if clients is not None:
+            s.clients = sorted(clients, key=lambda c: (c.get("ip") or "", c.get("mac") or ""))
+        s.collect_error = errs.get("traffic") or errs.get("clients")
+
+    def _throughput(self, name: str, counters: dict, now: float, only=None) -> dict:
+        """Turn cumulative rx/tx byte counters into per-interface bit/s since the last round."""
+        prev = self._traffic_prev.setdefault(name, {})
+        out: dict[str, dict] = {}
+        for iface, (rx, tx) in counters.items():
+            if only and iface not in only:
+                continue
+            p = prev.get(iface)
+            entry = {"rx_bytes": rx, "tx_bytes": tx, "rx_bps": None, "tx_bps": None}
+            if p:
+                dt = now - p[2]
+                if dt > 0 and rx >= p[0] and tx >= p[1]:  # ignore counter resets (reboots)
+                    entry["rx_bps"] = round((rx - p[0]) * 8 / dt)
+                    entry["tx_bps"] = round((tx - p[1]) * 8 / dt)
+                    with self.lock:
+                        self.db.execute("INSERT INTO traffic VALUES (?,?,?,?,?)",
+                                        (now, name, iface, entry["rx_bps"], entry["tx_bps"]))
+            prev[iface] = (rx, tx, now)
+            out[iface] = entry
+        return out
+
+    # ------------------------------------------------------------ speedtest
+    def run_speedtest(self) -> dict:
+        from . import speedtest
+        self._speedtest_running = True
+        try:
+            r = speedtest.run(self.speedtest_cfg)
+        finally:
+            self._speedtest_running = False
+        self._last_speedtest = time.time()
+        if r.get("ok"):
+            with self.lock:
+                self.db.execute("INSERT INTO speedtest VALUES (?,?,?,?)",
+                                (r["ts"], r["down_mbps"], r["up_mbps"], r["ping_ms"]))
+                self.db.commit()
+        return r
+
+    def trigger_speedtest(self) -> None:
+        """Kick off a speed test in the background (for the dashboard button)."""
+        if not self._speedtest_running:
+            threading.Thread(target=self.run_speedtest, daemon=True).start()
+
+    def latest_speedtest(self) -> dict | None:
+        with self.lock:
+            row = self.db.execute(
+                "SELECT ts, down_mbps, up_mbps, ping_ms FROM speedtest ORDER BY ts DESC LIMIT 1").fetchone()
+        if not row:
+            return None
+        return {"ts": row[0], "down_mbps": row[1], "up_mbps": row[2], "ping_ms": row[3],
+                "running": self._speedtest_running}
+
+    def speedtest_history(self, limit: int = 30) -> list[dict]:
+        with self.lock:
+            rows = self.db.execute(
+                "SELECT ts, down_mbps, up_mbps FROM speedtest ORDER BY ts DESC LIMIT ?", (limit,)).fetchall()
+        return [{"ts": t, "down_mbps": d, "up_mbps": u} for t, d, u in reversed(rows)]
+
     def run_once(self) -> None:
         devices = [d for d in self.net.devices if d.host]
         with ThreadPoolExecutor(max_workers=min(32, max(1, len(devices)))) as pool:
             list(pool.map(self.check_device, devices))
         self.check_endpoints()
+        now = time.time()
+        if self.speedtest_every and not self._speedtest_running \
+                and now - self._last_speedtest >= self.speedtest_every:
+            self._last_speedtest = now
+            threading.Thread(target=self.run_speedtest, daemon=True).start()
 
     def check_endpoints(self) -> None:
         """EDR agent health from Wazuh; alert when an agent disconnects or reconnects."""
@@ -200,8 +306,23 @@ class Monitor:
         for d in devices:
             counts[d["state"]] = counts.get(d["state"], 0) + 1
         endpoints = sorted(self.endpoints.values(), key=lambda a: (a["status"] == "active", a["name"] or ""))
+        # merge every router's connected-device view into one network-wide list, keyed by MAC
+        merged: dict[str, dict] = {}
+        for d in devices:
+            for c in d.get("clients") or []:
+                key = c.get("mac") or c.get("ip")
+                if not key:
+                    continue
+                row = merged.setdefault(key, {})
+                for k, v in c.items():
+                    if v and not row.get(k):
+                        row[k] = v
+                row["seen_by"] = d["device"]
+        clients = sorted(merged.values(), key=lambda c: (c.get("source") != "wifi", c.get("ip") or "~", c.get("mac") or ""))
         return {"interval": self.interval, "devices": devices, "counts": counts,
                 "endpoints": endpoints, "edr_error": self.edr_error,
+                "clients": clients, "clients_total": len(clients),
+                "speedtest": self.latest_speedtest(), "speedtest_history": self.speedtest_history(),
                 "events": [{"ts": t, "device": dv, "state": st, "message": m} for t, dv, st, m in rows]}
 
     def uptime_percent(self, device: str, hours: float = 24) -> float | None:

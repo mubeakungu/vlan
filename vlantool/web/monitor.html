@@ -42,6 +42,15 @@ table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; padding: 4px 6px; }
 td { padding: 5px 6px; border-top: 1px solid var(--line); }
 .tablewrap { overflow-x: auto; }
+.btn { font: inherit; font-size: 12px; padding: 3px 10px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--bg); color: var(--accent); cursor: pointer; }
+.btn:disabled { opacity: .5; cursor: default; }
+.speedrow { display: flex; gap: 24px; flex-wrap: wrap; align-items: baseline; }
+.speedrow .big { font-size: 30px; font-weight: 600; } .speedrow .u { color: var(--muted); font-size: 13px; }
+.rate { font-variant-numeric: tabular-nums; }
+.tag { font-size: 10px; text-transform: uppercase; padding: 0 5px; border-radius: 8px; background: var(--line); color: var(--muted); }
+.tag.wifi { background: var(--accent); color: #fff; }
+section h2 .btn { float: right; }
 </style>
 </head>
 <body>
@@ -53,7 +62,13 @@ td { padding: 5px 6px; border-top: 1px solid var(--line); }
 <main>
   <div id="off" class="empty" hidden>Monitoring is not running. Start it with <code>vlantool monitor network.yaml</code>.</div>
   <div class="tiles" id="tiles"></div>
+  <section id="speed">
+    <h2>Internet speed <button id="runSpeed" class="btn">Run test</button></h2>
+    <div id="speedBody" class="empty">No speed test yet.</div>
+  </section>
   <div class="grid" id="cards"></div>
+  <section id="clients" hidden><h2>Connected devices <span id="clientsCount" class="meta"></span></h2>
+    <div class="tablewrap"><table id="clientsTable"></table></div></section>
   <section id="edr" hidden><h2>Endpoints (EDR agents)</h2><div id="edrBody"></div></section>
   <section><h2>Recent alerts</h2><div id="events" class="empty">No alerts yet.</div></section>
 </main>
@@ -61,6 +76,10 @@ td { padding: 5px 6px; border-top: 1px solid var(--line); }
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const ago = (t) => { if (!t) return "never"; const s = Math.round(Date.now() / 1000 - t);
   return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : s < 86400 ? `${Math.round(s / 3600)}h ago` : `${Math.round(s / 86400)}d ago`; };
+const bps = (b) => { if (b === null || b === undefined) return "-"; const u = ["bps", "Kbps", "Mbps", "Gbps"]; let i = 0;
+  while (b >= 1000 && i < u.length - 1) { b /= 1000; i++; } return `${b < 10 ? b.toFixed(1) : Math.round(b)} ${u[i]}`; };
+const bytes = (b) => { if (b === null || b === undefined) return "-"; const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0;
+  while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; } return `${b < 10 ? b.toFixed(1) : Math.round(b)} ${u[i]}`; };
 
 function spark(history) {
   if (!history.length) return "";
@@ -84,19 +103,28 @@ async function refresh() {
   document.getElementById("off").hidden = r.running;
   if (!r.running) return;
   const c = r.counts, total = r.devices.length;
+  let wanRx = 0, wanTx = 0;
+  r.devices.forEach((d) => Object.values(d.traffic || {}).forEach((t) => { wanRx += t.rx_bps || 0; wanTx += t.tx_bps || 0; }));
+  const st = r.speedtest;
   document.getElementById("tiles").innerHTML = [
-    ["Devices", total], ["Up", c.up || 0], ["Down", c.down || 0], ["Degraded", c.degraded || 0],
-    ["Check every", `${r.interval}s`],
-  ].map(([l, n]) => `<div class="tile"><div class="n">${n}</div><div class="l">${l}</div></div>`).join("");
+    ["Devices", total], ["Up", c.up || 0], ["Down", c.down || 0],
+    ["Clients", r.clients_total ?? 0],
+    ["Traffic ↓ / ↑", `${bps(wanRx)} / ${bps(wanTx)}`],
+    ["Internet ↓", st && st.down_mbps !== null ? `${st.down_mbps} Mbps` : "—"],
+  ].map(([l, n]) => `<div class="tile"><div class="n" style="font-size:${String(n).length > 8 ? 17 : 26}px">${esc(n)}</div><div class="l">${l}</div></div>`).join("");
 
   const order = { down: 0, degraded: 1, unknown: 2, up: 3, "no-host": 4 };
   const devices = [...r.devices].sort((a, b) => order[a.state] - order[b.state] || a.device.localeCompare(b.device));
   document.getElementById("cards").innerHTML = devices.map((d) => {
+    const traf = Object.entries(d.traffic || {})
+      .filter(([, t]) => t.rx_bps !== null || t.tx_bps !== null)
+      .sort((a, b) => (b[1].rx_bps + b[1].tx_bps) - (a[1].rx_bps + a[1].tx_bps)).slice(0, 6);
     const rows = [
       ["Ping", d.latency_ms !== null ? `${d.latency_ms} ms` : "no reply"],
       ["Uptime 24h", d.uptime_24h !== null ? `${d.uptime_24h}%` : "-"],
       ["State since", ago(d.last_change)],
       ...Object.entries(d.stats || {}).map(([k, v]) => [k.replace("_", " "), v]),
+      ...traf.map(([i, t]) => [i, `↓ ${bps(t.rx_bps)}  ↑ ${bps(t.tx_bps)}`]),
       ...Object.entries(d.ports || {}).map(([p, ok]) => [`Port ${p}`, ok ? "open" : "CLOSED"]),
     ];
     return `<div class="card ${d.state}">
@@ -107,6 +135,33 @@ async function refresh() {
       ${spark(d.history || [])}
     </div>`;
   }).join("");
+
+  // internet speed
+  const sb = document.getElementById("speedBody");
+  if (st) {
+    const when = st.ts ? `tested ${ago(st.ts)}` : "";
+    sb.className = "";
+    sb.innerHTML = `<div class="speedrow">
+      <div><div class="big rate">${st.down_mbps ?? "—"}</div><div class="u">Mbps down</div></div>
+      <div><div class="big rate">${st.up_mbps ?? "—"}</div><div class="u">Mbps up</div></div>
+      <div><div class="big rate">${st.ping_ms ?? "—"}</div><div class="u">ms latency</div></div>
+      <div class="u">${esc(when)}</div></div>`;
+  }
+  document.getElementById("runSpeed").disabled = !!(st && st.running);
+  if (st && st.running) sb.innerHTML += `<div class="meta">running…</div>`;
+
+  // connected devices
+  const cl = r.clients || [];
+  document.getElementById("clients").hidden = !cl.length;
+  document.getElementById("clientsCount").textContent = cl.length ? `(${cl.length})` : "";
+  if (cl.length) {
+    document.getElementById("clientsTable").innerHTML =
+      `<thead><tr><th>IP</th><th>MAC</th><th>Host</th><th>VLAN / interface</th><th>Via</th><th>Seen by</th></tr></thead><tbody>` +
+      cl.map((x) => `<tr><td class="rate">${esc(x.ip || "-")}</td><td class="rate">${esc(x.mac || "-")}</td>
+        <td>${esc(x.host || "-")}</td><td>${esc(x.iface || "-")}</td>
+        <td><span class="tag ${x.source === "wifi" ? "wifi" : ""}">${esc(x.source || "-")}</span>${x.signal ? " " + esc(x.signal) + "dBm" : ""}</td>
+        <td>${esc(x.seen_by || "-")}</td></tr>`).join("") + `</tbody>`;
+  }
 
   const eps = r.endpoints || [];
   document.getElementById("edr").hidden = !eps.length && !r.edr_error;
@@ -121,6 +176,11 @@ async function refresh() {
     : "No alerts yet.";
   document.getElementById("updated").textContent = "Updated " + new Date().toLocaleTimeString();
 }
+document.getElementById("runSpeed").addEventListener("click", async (e) => {
+  e.target.disabled = true;
+  try { await fetch("/api/speedtest", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); } catch {}
+  setTimeout(refresh, 1500);
+});
 refresh();
 setInterval(refresh, 5000);
 </script>

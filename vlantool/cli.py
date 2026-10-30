@@ -130,12 +130,20 @@ def cmd_monitor(args) -> None:
         from .monitor.engine import Monitor
         mon = Monitor(net, ":memory:")
         mon.run_once()
+        snap = mon.snapshot()
         print(f"{'DEVICE':<22} {'HOST':<16} {'STATE':<9} {'PING':>8}  DETAILS")
-        for s in mon.snapshot()["devices"]:
+        for s in snap["devices"]:
             ping = f"{s['latency_ms']} ms" if s["latency_ms"] is not None else "-"
             details = ", ".join(f"{k}={v}" for k, v in s["stats"].items())
             details += "".join(f" port {p} {'open' if ok else 'CLOSED'}" for p, ok in s["ports"].items())
             print(f"{s['device']:<22} {s['host'] or '-':<16} {s['state']:<9} {ping:>8}  {details}")
+        clients = snap.get("clients") or []
+        if clients:
+            print(f"\n{len(clients)} connected devices:")
+            print(f"  {'IP':<16} {'MAC':<18} {'VIA':<6} HOST")
+            for c in clients:
+                print(f"  {c.get('ip') or '-':<16} {c.get('mac') or '-':<18} {c.get('source') or '-':<6} {c.get('host') or ''}")
+        print("\n(bandwidth needs the live dashboard: two rounds to measure a rate — run without --once)")
         return
     from .web.server import serve
     serve(args.file, host=args.host, port=args.port, monitor=True, db=args.db)

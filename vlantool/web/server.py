@@ -87,6 +87,11 @@ class Handler(BaseHTTPRequestHandler):
             for d in snap["devices"]:
                 d["uptime_24h"] = self.monitor.uptime_percent(d["device"])
             self._json({"running": True, **snap})
+        elif self.path == "/api/speedtest":
+            if self.monitor is None:
+                return self._json({"running": False})
+            self._json({"latest": self.monitor.latest_speedtest(),
+                        "history": self.monitor.speedtest_history()})
         elif self.path == "/api/vendors":
             self._json([{"key": p.key, "title": p.title, "covers": p.covers,
                          "pushable": bool(p.pushable and p.netmiko_type),
@@ -107,6 +112,11 @@ class Handler(BaseHTTPRequestHandler):
             body = self._body()
         except json.JSONDecodeError:
             return self._json({"error": "bad JSON"}, 400)
+        if self.path == "/api/speedtest":
+            if self.monitor is None:
+                return self._json({"error": "monitoring is not running"}, 409)
+            self.monitor.trigger_speedtest()
+            return self._json({"started": True})
         if self.path == "/api/generate":
             self._json(build(body.get("data") or {}, self.path_file))
         elif self.path == "/api/yaml":
