@@ -314,7 +314,6 @@ Run it from a PC plugged into ether2 or ether3. Undo with
 | `fortinet` | FortiGate | yes |
 | `pfsense` | pfSense / OPNsense config.xml sections | file only |
 | `openwrt` | OpenWrt 21.02+ routers and APs (uci, DSA) | yes |
-| `generic` | monitoring-only / manual-step devices (APs, radios, servers) | n/a |
 | `generic` | monitoring-only devices (APs, radios, servers, cameras) | n/a |
 | `web_gui` | Any switch with only a web page: TP-Link Easy Smart, Netgear Plus, UniFi, Omada, Zyxel GS1900... | manual steps |
 
