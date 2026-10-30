@@ -53,4 +53,4 @@ class WebGUI(Vendor):
         return out
 
     def generate(self) -> str:
-        return "\n".join(self.header() + self.render()) + "\n"
+        return "\n".join(self.header() + self.body()) + "\n"

@@ -1,0 +1,158 @@
+# A whole small network in one file: VLANs, an edge router, a branch office over
+# a point-to-point radio link, a second office over IPsec, a WireGuard VPN for phones,
+# access points, an extender, and monitoring for everything.
+#
+#   vlantool validate examples/full-network.yaml
+#   vlantool generate examples/full-network.yaml -o out/
+#   vlantool monitor  examples/full-network.yaml          # dashboard on http://127.0.0.1:8080/monitor
+
+monitoring:
+  interval: 30
+  ssh_stats_every: 300
+  # webhook: https://hooks.slack.com/services/...      # optional alert destinations
+  # telegram: {token: "123456:ABC...", chat_id: "987654321"}
+
+vlans:
+  - {id: 10, name: USERS,   gateway: 192.168.10.1/24}
+  - {id: 20, name: GUEST,   gateway: 192.168.20.1/24}
+  - {id: 30, name: CAMERAS, gateway: 192.168.30.1/24}
+  - {id: 99, name: MGMT,    gateway: 192.168.99.1/24}
+  - {id: 50, name: BRANCH,  gateway: 192.168.50.1/24}
+  - {id: 60, name: OFFICE2, gateway: 10.60.0.1/24}
+
+devices:
+  # Edge router: internet, NAT, DHCP, firewall, VPN, and the AP radios
+  - name: hap
+    vendor: mikrotik_routeros
+    host: 192.168.88.1
+    username: admin
+    bridge: bridge
+    create_bridge: false
+    vlans: [10, 20, 30, 99]
+    routing: [10, 20, 30, 99]
+    access:
+      ether4: USERS
+    trunks:
+      ether5: {allowed: [10, 20, 30, 99], native: 99}   # to the office switch
+    router:
+      hostname: hap-edge
+      wan: {interface: ether1, mode: dhcp}
+      dns: [1.1.1.1, 8.8.8.8]
+      dhcp_server: all
+      isolate: [GUEST, CAMERAS]
+      port_forwards:
+        - {name: nvr, proto: tcp, port: 8443, to: 192.168.30.10, to_port: 443}
+      ntp: [pool.ntp.org]
+    vpn:
+      wireguard:
+        address: 10.100.0.1/24
+        port: 51820
+        endpoint: myhome.ddns.net
+        full_tunnel: true
+        peers:
+          - name: phone
+          - name: laptop
+      ipsec:
+        - name: office2
+          peer: 198.51.100.7
+          psk: change-this-shared-secret
+          local: [192.168.10.0/24]
+          remote: [10.60.0.0/24]
+    wireless:
+      country: kenya
+      ssids:
+        - {ssid: Home,  passphrase: "home-passphrase-123", vlan: USERS, band: both}
+        - {ssid: Guest, passphrase: "guest-pass-2024",     vlan: GUEST, band: 2ghz}
+
+  # Office switch fed by the hAP trunk
+  - name: office-switch
+    vendor: tplink_jetstream
+    host: 192.168.99.2
+    vlans: [10, 20, 30, 99]
+    access:
+      1/0/1-16: USERS
+      1/0/17-20: CAMERAS
+    trunks:
+      1/0/24: {allowed: [10, 20, 30, 99], native: 99}
+
+  # Branch office router across the radio link; it uses home's internet
+  - name: branch-router
+    vendor: vyos
+    host: 10.255.0.2
+    vlans: [50]
+    parent_interface: eth1
+    routing: [50]
+    router:
+      dhcp_server: [50]
+      dns: [192.168.10.1]
+      static_routes:
+        - {to: 0.0.0.0/0, via: 10.255.0.1}
+
+  # Second office reached over the internet with IPsec
+  - name: office2-fw
+    vendor: fortinet
+    host: 10.60.0.1
+    vlans: [60]
+    parent_interface: port2
+    routing: [60]
+    router:
+      wan: {interface: wan1, mode: static, address: 198.51.100.7/29, gateway: 198.51.100.1}
+      dns: [1.1.1.1, 8.8.8.8]
+      dhcp_server: [60]
+    vpn:
+      ipsec:
+        - name: home
+          peer: 203.0.113.10
+          psk: change-this-shared-secret
+          local: [10.60.0.0/24]
+          remote: [192.168.10.0/24]
+
+  # The two radios of the point-to-point link (managed via their web page)
+  - name: ptp-radio-home
+    vendor: generic
+    host: 192.168.99.20
+  - name: ptp-radio-branch
+    vendor: generic
+    host: 192.168.99.21
+
+  # OpenWrt access point upstairs, SSIDs on VLANs
+  - name: upstairs-ap
+    vendor: openwrt
+    host: 192.168.99.30
+    username: root
+    vlans: [10, 20, 99]
+    trunks:
+      lan1: {allowed: all, native: 99}
+    mgmt: {vlan: MGMT, address: 192.168.99.30/24}
+    wireless:
+      country_code: KE
+      ssids:
+        - {ssid: Home,  passphrase: "home-passphrase-123", vlan: USERS}
+        - {ssid: Guest, passphrase: "guest-pass-2024",     vlan: GUEST, band: 2ghz}
+
+  # Wi-Fi extender in the garden (routed repeater)
+  - name: garden-extender
+    vendor: openwrt
+    host: 192.168.10.40
+    username: root
+    vlans: []
+    wireless:
+      country_code: KE
+      mode: extender
+      uplink: {ssid: Home, passphrase: "home-passphrase-123", band: 5ghz}
+      ssids:
+        - {ssid: Home-Garden, passphrase: "home-passphrase-123", band: 2ghz}
+
+  # A UniFi AP managed by its controller: we print the steps and watch it
+  - name: lobby-unifi-ap
+    vendor: generic
+    host: 192.168.99.31
+    wireless:
+      ssids:
+        - {ssid: Home, passphrase: "home-passphrase-123", vlan: USERS}
+
+links:
+  - name: branch
+    a: {device: hap, interface: ether3, address: 10.255.0.1/30}
+    b: {device: branch-router, interface: eth2, address: 10.255.0.2/30}
+    routing: static

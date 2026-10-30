@@ -78,6 +78,8 @@ def validate(net: Network) -> tuple[list[str], list[str]]:
             for vid in t.allowed + ([t.native] if t.native else []):
                 if vid not in net.vlans:
                     errors.append(f"{where}: trunk {t.port} uses undefined VLAN {vid}")
+                elif vid not in defined:
+                    errors.append(f"{where}: trunk {t.port} carries VLAN {vid}, which is not in this device's 'vlans'")
             if t.native and t.native not in t.allowed:
                 warnings.append(f"{where}: trunk {t.port} native VLAN {t.native} is not in its allowed list (added automatically)")
                 t.allowed = sorted(set(t.allowed) | {t.native})
@@ -92,6 +94,10 @@ def validate(net: Network) -> tuple[list[str], list[str]]:
             warnings.append(f"{where}: {plugin.title} does not switch ports; access/trunks are ignored")
         if d.policies and not plugin.supports_policies:
             warnings.append(f"{where}: {plugin.title} has no firewall policies; 'policies' are ignored")
+        from .services import validate_services
+        e, w = validate_services(net, d)
+        errors += [x for x in e if x not in errors]
+        warnings += [x for x in w if x not in warnings]
         for p in d.policies:
             for vid in (p.src, p.dst):
                 if vid not in d.routed_vlans:

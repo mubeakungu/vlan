@@ -13,5 +13,8 @@ class Generic(Vendor):
     supports_switching = False
     comment = "#"
 
+    def header(self) -> list[str]:
+        return [f"# {self.dev.name}: {self.title}"]
+
     def render(self) -> list[str]:
-        return ["# nothing to configure: this device is only monitored"]
+        return []

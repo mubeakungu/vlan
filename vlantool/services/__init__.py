@@ -1,0 +1,38 @@
+"""Services layered on top of VLANs: router basics, point-to-point links, VPN, wireless.
+
+Each service module exposes:
+    render(plugin) -> list[str]           config lines for the device (empty if unused)
+    files(plugin) -> dict[str, str]       optional extra files (e.g. WireGuard clients)
+    validate(net, device) -> (errors, warnings)
+A vendor without native support gets a manual step list instead of silence.
+"""
+from __future__ import annotations
+
+from . import links, router, vpn, wireless
+
+SERVICES = [router, links, vpn, wireless]
+
+
+def render_services(plugin) -> list[str]:
+    out: list[str] = []
+    for svc in SERVICES:
+        out += svc.render(plugin)
+    return out
+
+
+def service_files(plugin) -> dict[str, str]:
+    files: dict[str, str] = {}
+    for svc in SERVICES:
+        if hasattr(svc, "files"):
+            files.update(svc.files(plugin))
+    return files
+
+
+def validate_services(net, device) -> tuple[list[str], list[str]]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    for svc in SERVICES:
+        e, w = svc.validate(net, device)
+        errors += e
+        warnings += w
+    return errors, warnings

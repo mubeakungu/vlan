@@ -22,6 +22,11 @@ class CiscoIOS(Vendor):
     port_prefix: list[str] = []  # lines added at top of every switch port
     subif_encap = "encapsulation dot1Q {id}"
 
+    def l3_name(self, v) -> str:
+        if self.dev.parent_interface:
+            return f"{self.dev.parent_interface}.{v.id}"
+        return self.svi_name.format(id=v.id).removeprefix("interface ")
+
     def ip(self, v) -> str:
         return f"{v.ip}/{v.prefixlen}" if self.ip_style == "prefix" else f"{v.ip} {v.netmask}"
 

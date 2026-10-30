@@ -15,6 +15,9 @@ class JuniperJunos(Vendor):
     config_enter = ["configure"]
     config_exit = ["commit and-quit"]
 
+    def l3_name(self, v) -> str:
+        return f"{self.dev.parent_interface}.{v.id}" if self.dev.parent_interface else f"irb.{v.id}"
+
     def members(self, ids) -> str:
         names = [self.vlan(i).name for i in ids]
         return names[0] if len(names) == 1 else "[ " + " ".join(names) + " ]"

@@ -24,10 +24,13 @@ MONITOR_PAGE = Path(__file__).with_name("monitor.html")
 EMPTY = {"vlans": [{"id": 10, "name": "USERS", "gateway": "192.168.10.1/24"}], "devices": []}
 
 
-def build(data: dict) -> dict:
+def build(data: dict, secrets_path: Path | None = None) -> dict:
     """Validate a network dict and render every device."""
     try:
         net = model.from_dict(data)
+        if secrets_path:
+            from ..secrets import Secrets
+            net.secrets = Secrets.for_network(secrets_path)
     except (model.ModelError, ValueError, TypeError, KeyError) as exc:
         return {"errors": [str(exc)], "warnings": [], "configs": {}}
     errors, warnings = validate(net)
@@ -35,7 +38,11 @@ def build(data: dict) -> dict:
     if not errors:
         for dev in net.devices:
             p = get(dev.vendor)
-            configs[dev.name] = {"vendor": p.title, "text": p(net, dev).generate(),
+            plugin = p(net, dev)
+            text = plugin.generate()
+            for name, content in plugin.extra_files().items():
+                text += f"\n# ===== {name} (WireGuard client file) =====\n{content}"
+            configs[dev.name] = {"vendor": p.title, "text": text,
                                  "pushable": bool(p.pushable and p.netmiko_type and dev.host)}
     return {"errors": errors, "warnings": warnings, "configs": configs}
 
@@ -94,7 +101,7 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             return self._json({"error": "bad JSON"}, 400)
         if self.path == "/api/generate":
-            self._json(build(body.get("data") or {}))
+            self._json(build(body.get("data") or {}, self.path_file))
         elif self.path == "/api/yaml":
             self._json({"yaml": yaml.safe_dump(body.get("data") or {}, sort_keys=False)})
         elif self.path == "/api/parse":
@@ -112,10 +119,12 @@ class Handler(BaseHTTPRequestHandler):
                     pass
             self._json({"saved": str(self.path_file)})
         elif self.path == "/api/push":
-            result = build(body.get("data") or {})
+            result = build(body.get("data") or {}, self.path_file)
             if result["errors"]:
                 return self._json({"results": [{"device": "-", "ok": False, "output": "\n".join(result["errors"])}]})
             net = model.from_dict(body["data"])
+            from ..secrets import Secrets
+            net.secrets = Secrets.for_network(self.path_file)
             validate(net)
             results = []
             for name in body.get("devices") or []:

@@ -14,11 +14,16 @@ class MikroTik(Vendor):
     netmiko_type = "mikrotik_routeros"
     comment = "#"
 
+    def l3_name(self, v) -> str:
+        return f"vlan{v.id}-{v.name}"
+
     def render(self) -> list[str]:
         out: list[str] = []
         br = self.dev.bridge
         parent = self.dev.parent_interface
-        switching = bool(self.dev.access or self.dev.trunks)
+        wifi_vlans = any(s.get("vlan") not in (None, "")
+                         for s in (self.dev.options.get("wireless") or {}).get("ssids") or [])
+        switching = bool(self.dev.access or self.dev.trunks or wifi_vlans)
         l3_parent = parent or br
         if switching:
             out.append("# VLAN filtering stays off until the end so you are not locked out mid-way")
@@ -49,8 +54,9 @@ class MikroTik(Vendor):
                     line += f" untagged={','.join(untagged)}"
                 out.append(line + f' comment="{v.name}"')
         dhcp_ids = set(model.parse_vlan_list(self.dev.options.get("dhcp_server"), self.net.vlans))
+        dhcp_ids |= set(model.parse_vlan_list((self.dev.options.get("router") or {}).get("dhcp_server"), self.net.vlans))
         for v in self.routed:
-            name = f"vlan{v.id}-{v.name}"
+            name = self.l3_name(v)
             out += [f"/interface vlan add interface={l3_parent} name={name} vlan-id={v.id}",
                     f"/ip address add address={v.ip}/{v.prefixlen} interface={name}"]
             if self.dev.options.get("lan_list", True):
@@ -82,6 +88,9 @@ class EdgeOS(Vendor):
     commit = True
     config_enter = ["configure"]
     config_exit = ["commit", "save", "exit"]
+
+    def l3_name(self, v) -> str:
+        return f"{self.dev.parent_interface}.{v.id}"
 
     def base(self) -> str:
         p = self.dev.parent_interface or "eth1"
@@ -134,6 +143,8 @@ class FortiGate(Vendor):
 
     def ifname(self, v) -> str:
         return v.name[:15]  # FortiOS interface names max 15 chars
+
+    l3_name = ifname
 
     def render(self) -> list[str]:
         vdom = self.dev.options.get("vdom", "root")

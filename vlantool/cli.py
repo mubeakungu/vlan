@@ -61,8 +61,13 @@ def cmd_generate(args) -> None:
             path = out_dir / f"{dev.name}.{ext}"
             path.write_text(text)
             print(f"wrote {path}")
+            for name, content in plugin.extra_files().items():
+                (out_dir / name).write_text(content)
+                print(f"wrote {out_dir / name}")
         else:
             print(text)
+            for name, content in plugin.extra_files().items():
+                print(f"----- {name} -----\n{content}")
 
 
 def cmd_push(args) -> None:

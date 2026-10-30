@@ -76,11 +76,29 @@ class Vendor:
     def render(self) -> list[str]:
         raise NotImplementedError
 
+    def l3_name(self, v: Vlan) -> str | None:
+        """Name of the routed interface for VLAN v (used by router/VPN services)."""
+        return None
+
+    def note(self, text: str) -> str:
+        """A comment line in this vendor's syntax."""
+        return f"<!-- {text} -->" if self.comment == "<!--" else f"{self.comment} {text}"
+
+    def body(self) -> list[str]:
+        """VLAN config followed by router, link, VPN and wireless services."""
+        from ..services import render_services
+        return self.render() + render_services(self)
+
+    def extra_files(self) -> dict[str, str]:
+        """Additional files for this device, e.g. WireGuard client configs."""
+        from ..services import service_files
+        return service_files(self)
+
     def generate(self) -> str:
-        return "\n".join(self.header() + self.config_enter + self.render()
+        return "\n".join(self.header() + self.config_enter + self.body()
                          + self.config_exit) + "\n"
 
     def push_commands(self) -> list[str]:
         """Commands sent over SSH: everything except comments and blanks."""
-        return [line for line in self.render()
+        return [line for line in self.body()
                 if line.strip() and not line.lstrip().startswith(self.comment)]

@@ -86,6 +86,8 @@ class Network:
     vlans: dict[int, Vlan]
     devices: list[Device]
     monitoring: dict[str, Any] = field(default_factory=dict)
+    links: list[dict[str, Any]] = field(default_factory=list)
+    secrets: Any = None  # vlantool.secrets.Secrets, set by load()
 
     def device(self, name: str) -> Device:
         for d in self.devices:
@@ -174,9 +176,12 @@ def compress_vlans(ids: list[int]) -> str:
 # ------------------------------------------------------------------- loading
 
 def load(path: str | Path) -> Network:
+    from .secrets import Secrets
     text = Path(path).read_text()
     data = json.loads(text) if str(path).endswith(".json") else yaml.safe_load(text)
-    return from_dict(data or {})
+    net = from_dict(data or {})
+    net.secrets = Secrets.for_network(path)
+    return net
 
 
 def from_dict(data: dict) -> Network:
@@ -215,7 +220,8 @@ def from_dict(data: dict) -> Network:
             t = t or {}
             if not isinstance(t, dict):
                 t = {"allowed": t}
-            allowed = parse_vlan_list(t.get("allowed", "all"), vlans)
+            dev_vlans = {i: vlans[i] for i in parse_vlan_list(raw.get("vlans", "all"), vlans) if i in vlans}
+            allowed = parse_vlan_list(t.get("allowed", "all"), dev_vlans)  # 'all' = every VLAN on this device
             native = t.get("native")
             native = parse_vlan_list(native, vlans)[0] if native not in (None, "") else None
             for p in expand_ports(spec):
@@ -248,4 +254,6 @@ def from_dict(data: dict) -> Network:
             policies=policies,
             options=known,
         ))
-    return Network(vlans=vlans, devices=devices, monitoring=dict(data.get("monitoring") or {}))
+    from .secrets import Secrets
+    return Network(vlans=vlans, devices=devices, monitoring=dict(data.get("monitoring") or {}),
+                   links=list(data.get("links") or []), secrets=Secrets(None))
