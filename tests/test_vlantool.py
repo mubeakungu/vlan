@@ -136,3 +136,23 @@ def test_mikrotik_existing_bridge_with_dhcp_server():
     assert "/ip dhcp-server network add address=192.168.10.0/24 gateway=192.168.10.1" in text
     assert "/interface list member add list=LAN interface=vlan10-USERS" in text
     assert "dhcp-relay add name=relay10" not in text  # local DHCP server wins over relay
+
+
+def test_push_accepts_empty_password(monkeypatch):
+    import sys, types
+    from vlantool.push import push_device
+    seen = {}
+
+    class FakeConn:
+        def __init__(self, **kw): seen.update(kw)
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def send_config_set(self, cmds, **kw): return "\n".join(cmds)
+        def save_config(self): raise NotImplementedError
+
+    monkeypatch.setitem(sys.modules, "netmiko", types.SimpleNamespace(ConnectHandler=FakeConn))
+    monkeypatch.delenv("VLANTOOL_PASSWORD", raising=False)
+    net = net_for("mikrotik_routeros", username="admin", access={"ether4": 10})
+    r = push_device(net, net.devices[0], password="")
+    assert r.ok, r.output
+    assert seen["password"] == "" and seen["device_type"] == "mikrotik_routeros"

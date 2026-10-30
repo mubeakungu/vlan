@@ -39,7 +39,8 @@ def push_device(net: Network, device: Device, *, username: str | None = None,
         "host": device.host,
         "port": device.port,
         "username": username or device.username or os.environ.get("VLANTOOL_USERNAME"),
-        "password": password or os.environ.get("VLANTOOL_PASSWORD"),
+        # an empty password is valid (factory MikroTik admin has none)
+        "password": password if password is not None else os.environ.get("VLANTOOL_PASSWORD"),
         "secret": secret or os.environ.get("VLANTOOL_SECRET", ""),
         "timeout": timeout,
     }
